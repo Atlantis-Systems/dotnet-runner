@@ -10,9 +10,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
     
-    strategy:
-      matrix:
-        dotnet-version: ['8.0.x', '9.0.x']
     
     steps:
     - uses: actions/checkout@v4
@@ -31,7 +28,7 @@ jobs:
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
       with:
-        dotnet-version: ${{ matrix.dotnet-version }}
+        dotnet-version: '9.0.x'
     
     - name: Display version
       run: |
