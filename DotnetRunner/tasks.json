@@ -1,0 +1,46 @@
+{
+  "version": "2.0.0",
+  "tasks": {
+    "build": {
+      "label": "Build the project",
+      "type": "shell",
+      "command": "dotnet build",
+      "group": "build",
+      "presentation": {
+        "echo": true,
+        "reveal": true,
+        "focus": false,
+        "panel": "shared"
+      }
+    },
+    "test": {
+      "label": "Run tests",
+      "type": "shell", 
+      "command": "dotnet test",
+      "group": "test",
+      "dependsOn": ["build"],
+      "allowConcurrent": true,
+      "presentation": {
+        "echo": true,
+        "reveal": true
+      }
+    },
+    "clean": {
+      "label": "Clean build artifacts",
+      "type": "shell",
+      "command": "dotnet clean",
+      "group": "build"
+    },
+    "restore": {
+      "label": "Restore packages",
+      "type": "shell",
+      "command": "dotnet restore"
+    },
+    "hello": {
+      "label": "Hello World Example",
+      "type": "shell",
+      "command": "echo",
+      "args": ["Hello from dotnet-runner!"]
+    }
+  }
+}

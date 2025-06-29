@@ -1,0 +1,13 @@
+mode: Mainline
+branches:
+  main:
+    regex: ^main$
+    mode: ContinuousDeployment
+    tag: ''
+    increment: Patch
+    prevent-increment-of-merged-branch-version: true
+    track-merge-target: false
+    source-branches: []
+ignore:
+  sha: []
+merge-message-formats: {}

@@ -1,0 +1,65 @@
+name: Publish Main
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Install GitVersion
+      uses: gittools/actions/gitversion/setup@v0.10.2
+      with:
+        versionSpec: '5.x'
+    
+    - name: Determine Version
+      id: gitversion
+      uses: gittools/actions/gitversion/execute@v0.10.2
+    
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '9.0.x'
+    
+    - name: Display version
+      run: |
+        echo "Publishing version: ${{ steps.gitversion.outputs.nuGetVersionV2 }}"
+        echo "SemVer: ${{ steps.gitversion.outputs.semVer }}"
+    
+    - name: Restore dependencies
+      run: dotnet restore
+    
+    - name: Build
+      run: dotnet build --no-restore --configuration Release -p:Version=${{ steps.gitversion.outputs.assemblySemVer }} -p:AssemblyVersion=${{ steps.gitversion.outputs.assemblySemVer }} -p:FileVersion=${{ steps.gitversion.outputs.assemblySemFileVer }} -p:PackageVersion=${{ steps.gitversion.outputs.nuGetVersionV2 }}
+    
+    - name: Test
+      run: dotnet test --no-build --configuration Release --verbosity normal
+    
+    - name: Pack
+      run: dotnet pack --no-build --configuration Release --output ./publish -p:PackageVersion=${{ steps.gitversion.outputs.nuGetVersionV2 }}
+    
+    - name: Publish to NuGet
+      run: dotnet nuget push ./publish/*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+    
+    - name: Upload package artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: published-package-${{ steps.gitversion.outputs.nuGetVersionV2 }}
+        path: ./publish/*.nupkg
+    
+    - name: Create release summary
+      run: |
+        echo "## 🚀 Published to NuGet" >> $GITHUB_STEP_SUMMARY
+        echo "**Version:** ${{ steps.gitversion.outputs.nuGetVersionV2 }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Package:** DotnetRunner" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Installation" >> $GITHUB_STEP_SUMMARY
+        echo '```bash' >> $GITHUB_STEP_SUMMARY
+        echo "dotnet tool install --global DotnetRunner --version ${{ steps.gitversion.outputs.nuGetVersionV2 }}" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
