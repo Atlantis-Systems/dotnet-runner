@@ -127,9 +127,27 @@ initCommand.SetHandler(() =>
     }
 });
 
-rootCommand.SetHandler(() =>
+rootCommand.SetHandler(async (string file) =>
 {
+    if (args.Length > 0)
+    {
+        var potentialTaskName = args[0];
+        
+        try
+        {
+            var executor = TaskExecutor.LoadFromFile(file);
+            if (executor.HasTask(potentialTaskName))
+            {
+                var result = await executor.ExecuteTaskAsync(potentialTaskName);
+                Environment.Exit(result);
+            }
+        }
+        catch
+        {
+        }
+    }
+    
     Console.WriteLine("Use 'dotnet-runner --help' for usage information.");
-});
+}, fileOption);
 
 return await rootCommand.InvokeAsync(args);

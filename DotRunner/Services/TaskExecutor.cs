@@ -180,6 +180,11 @@ public class TaskExecutor
         return process.ExitCode;
     }
 
+    public bool HasTask(string taskName)
+    {
+        return _tasks.ContainsKey(taskName);
+    }
+
     public void ListTasks()
     {
         Console.WriteLine("Available tasks:");
