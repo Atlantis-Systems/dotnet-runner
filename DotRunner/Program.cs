@@ -129,27 +129,52 @@ initCommand.SetHandler(() =>
     }
 });
 
-rootCommand.SetHandler(async (string file, bool concurrent) =>
+rootCommand.SetHandler((string file, bool concurrent) =>
 {
-    if (args.Length > 0)
+    // Show help when no arguments provided
+    Console.WriteLine("Use 'dotnet-runner --help' for usage information.");
+}, fileOption, concurrentOption);
+
+// Pre-process arguments to handle direct task execution
+if (args.Length > 0)
+{
+    var firstArg = args[0];
+    
+    // Skip if it's a known command or starts with -- (option)
+    if (firstArg != "list" && firstArg != "run" && firstArg != "init" && !firstArg.StartsWith("--"))
     {
-        var potentialTaskName = args[0];
-        
         try
         {
-            var executor = TaskExecutor.LoadFromFile(file, concurrent);
-            if (executor.HasTask(potentialTaskName))
+            // Try to load tasks and see if first argument matches a task name
+            var file = "tasks.json";
+            var concurrent = false;
+            
+            // Parse file and concurrent options from remaining args
+            for (int i = 1; i < args.Length; i++)
             {
-                var result = await executor.ExecuteTaskAsync(potentialTaskName);
-                Environment.Exit(result);
+                if ((args[i] == "--file" || args[i] == "-f") && i + 1 < args.Length)
+                {
+                    file = args[i + 1];
+                    i++; // Skip the value
+                }
+                else if (args[i] == "--concurrent" || args[i] == "-c")
+                {
+                    concurrent = true;
+                }
+            }
+            
+            var executor = TaskExecutor.LoadFromFile(file, concurrent);
+            if (executor.HasTask(firstArg))
+            {
+                var result = await executor.ExecuteTaskAsync(firstArg);
+                return result;
             }
         }
         catch
         {
+            // If task loading fails, fall back to normal command parsing
         }
     }
-    
-    Console.WriteLine("Use 'dotnet-runner --help' for usage information.");
-}, fileOption, concurrentOption);
+}
 
 return await rootCommand.InvokeAsync(args);
