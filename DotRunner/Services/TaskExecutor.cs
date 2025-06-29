@@ -87,17 +87,18 @@ public class TaskExecutor
 
         try
         {
-            Console.WriteLine($"Executing task: {task.Label ?? taskName}");
+            var taskLabel = GetColoredTaskLabel(taskName);
+            Console.WriteLine($"{taskLabel} Executing task: {task.Label ?? taskName}");
             
-            var result = await RunCommandAsync(task);
+            var result = await RunCommandAsync(task, taskName);
             
             if (result == 0)
             {
-                Console.WriteLine($"Task '{taskName}' completed successfully.");
+                Console.WriteLine($"{taskLabel} Task completed successfully.");
             }
             else
             {
-                Console.WriteLine($"Task '{taskName}' failed with exit code {result}.");
+                Console.WriteLine($"{taskLabel} Task failed with exit code {result}.");
             }
 
             return result;
@@ -109,7 +110,37 @@ public class TaskExecutor
         }
     }
 
-    private async Task<int> RunCommandAsync(TaskDefinition task)
+    private string GetColoredTaskLabel(string taskName)
+    {
+        var colors = new[] { ConsoleColor.Cyan, ConsoleColor.Green, ConsoleColor.Yellow, ConsoleColor.Magenta, ConsoleColor.Blue };
+        var colorIndex = Math.Abs(taskName.GetHashCode()) % colors.Length;
+        var color = colors[colorIndex];
+        
+        var originalColor = Console.ForegroundColor;
+        Console.ForegroundColor = color;
+        var coloredLabel = $"\u001b[1m({taskName})\u001b[0m";
+        Console.ForegroundColor = originalColor;
+        
+        return $"\u001b[1m\u001b[{GetAnsiColorCode(color)}m({taskName})\u001b[0m";
+    }
+    
+    private int GetAnsiColorCode(ConsoleColor color)
+    {
+        return color switch
+        {
+            ConsoleColor.Black => 30,
+            ConsoleColor.Red => 31,
+            ConsoleColor.Green => 32,
+            ConsoleColor.Yellow => 33,
+            ConsoleColor.Blue => 34,
+            ConsoleColor.Magenta => 35,
+            ConsoleColor.Cyan => 36,
+            ConsoleColor.White => 37,
+            _ => 37
+        };
+    }
+
+    private async Task<int> RunCommandAsync(TaskDefinition task, string taskName)
     {
         var processInfo = new ProcessStartInfo();
 
@@ -164,8 +195,9 @@ public class TaskExecutor
 
         if (task.Presentation.Echo)
         {
-            process.OutputDataReceived += (_, e) => { if (e.Data != null) Console.WriteLine(e.Data); };
-            process.ErrorDataReceived += (_, e) => { if (e.Data != null) Console.Error.WriteLine(e.Data); };
+            var taskLabel = GetColoredTaskLabel(taskName);
+            process.OutputDataReceived += (_, e) => { if (e.Data != null) Console.WriteLine($"{taskLabel} {e.Data}"); };
+            process.ErrorDataReceived += (_, e) => { if (e.Data != null) Console.Error.WriteLine($"{taskLabel} {e.Data}"); };
         }
 
         process.Start();
