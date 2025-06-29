@@ -57,9 +57,9 @@ jobs:
       run: |
         echo "## 🚀 Published to NuGet" >> $GITHUB_STEP_SUMMARY
         echo "**Version:** ${{ steps.gitversion.outputs.nuGetVersionV2 }}" >> $GITHUB_STEP_SUMMARY
-        echo "**Package:** DotnetRunner" >> $GITHUB_STEP_SUMMARY
+        echo "**Package:** DotRunner" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### Installation" >> $GITHUB_STEP_SUMMARY
         echo '```bash' >> $GITHUB_STEP_SUMMARY
-        echo "dotnet tool install --global DotnetRunner --version ${{ steps.gitversion.outputs.nuGetVersionV2 }}" >> $GITHUB_STEP_SUMMARY
+        echo "dotnet tool install --global DotRunner --version ${{ steps.gitversion.outputs.nuGetVersionV2 }}" >> $GITHUB_STEP_SUMMARY
         echo '```' >> $GITHUB_STEP_SUMMARY
