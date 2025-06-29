@@ -9,7 +9,7 @@ var fileOption = new Option<string>(
 var concurrentOption = new Option<bool>(
     aliases: ["--concurrent", "-c"],
     description: "Enable concurrent execution of tasks",
-    getDefaultValue: () => false);
+    getDefaultValue: () => true);
 
 var listCommand = new Command("list", "List all available tasks")
 {
@@ -147,7 +147,7 @@ if (args.Length > 0)
         {
             // Try to load tasks and see if first argument matches a task name
             var file = "tasks.json";
-            var concurrent = false;
+            var concurrent = true;
             
             // Parse file and concurrent options from remaining args
             for (int i = 1; i < args.Length; i++)
