@@ -2,7 +2,7 @@ mode: Mainline
 branches:
   main:
     regex: ^main$
-    mode: ContinuousDeployment
+    mode: ContinuousDelivery
     tag: ''
     increment: Patch
     prevent-increment-of-merged-branch-version: true
