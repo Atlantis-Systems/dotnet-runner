@@ -1,4 +1,4 @@
-﻿using System.CommandLine;
+using System.CommandLine;
 using DotRunner.Services;
 
 var fileOption = new Option<string>(
