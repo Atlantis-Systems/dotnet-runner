@@ -31,7 +31,9 @@ var rootCommand = new RootCommand("A .NET tool for running tasks defined in task
 {
     listCommand,
     runCommand,
-    initCommand
+    initCommand,
+    fileOption,
+    concurrentOption
 };
 
 listCommand.SetHandler((string file) =>
@@ -127,7 +129,7 @@ initCommand.SetHandler(() =>
     }
 });
 
-rootCommand.SetHandler(async (string file) =>
+rootCommand.SetHandler(async (string file, bool concurrent) =>
 {
     if (args.Length > 0)
     {
@@ -135,7 +137,7 @@ rootCommand.SetHandler(async (string file) =>
         
         try
         {
-            var executor = TaskExecutor.LoadFromFile(file);
+            var executor = TaskExecutor.LoadFromFile(file, concurrent);
             if (executor.HasTask(potentialTaskName))
             {
                 var result = await executor.ExecuteTaskAsync(potentialTaskName);
@@ -148,6 +150,6 @@ rootCommand.SetHandler(async (string file) =>
     }
     
     Console.WriteLine("Use 'dotnet-runner --help' for usage information.");
-}, fileOption);
+}, fileOption, concurrentOption);
 
 return await rootCommand.InvokeAsync(args);
