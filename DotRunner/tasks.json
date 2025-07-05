@@ -41,6 +41,11 @@
       "type": "shell",
       "command": "echo",
       "args": ["Hello from dotnet-runner!"]
+    },
+    "test-no-label": {
+      "type": "shell",
+      "command": "echo",
+      "args": ["This task has no label"]
     }
   }
 }

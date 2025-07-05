@@ -88,7 +88,7 @@ public class TaskExecutor
         try
         {
             var taskLabel = GetColoredTaskLabel(taskName);
-            Console.WriteLine($"{taskLabel} Executing task: {task.Label ?? taskName}");
+            Console.WriteLine($"{taskLabel} Executing task...");
             
             var result = await RunCommandAsync(task, taskName);
             
@@ -112,16 +112,19 @@ public class TaskExecutor
 
     private string GetColoredTaskLabel(string taskName)
     {
+        var task = _tasks[taskName];
+        var displayLabel = !string.IsNullOrEmpty(task.Label) ? task.Label : taskName;
+        
         var colors = new[] { ConsoleColor.Cyan, ConsoleColor.Green, ConsoleColor.Yellow, ConsoleColor.Magenta, ConsoleColor.Blue };
         var colorIndex = Math.Abs(taskName.GetHashCode()) % colors.Length;
         var color = colors[colorIndex];
         
         var originalColor = Console.ForegroundColor;
         Console.ForegroundColor = color;
-        var coloredLabel = $"\u001b[1m({taskName})\u001b[0m";
+        var coloredLabel = $"\u001b[1m({displayLabel})\u001b[0m";
         Console.ForegroundColor = originalColor;
         
-        return $"\u001b[1m\u001b[{GetAnsiColorCode(color)}m({taskName})\u001b[0m";
+        return $"\u001b[1m\u001b[{GetAnsiColorCode(color)}m({displayLabel})\u001b[0m";
     }
     
     private int GetAnsiColorCode(ConsoleColor color)
