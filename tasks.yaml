@@ -1,0 +1,35 @@
+version: "2.0.0"
+tasks:
+  build:
+    label: Build the project
+    type: shell
+    command: dotnet build
+    group: build
+    presentation:
+      echo: true
+      reveal: true
+      focus: false
+      panel: shared
+  test:
+    label: Run tests
+    type: shell
+    command: dotnet test
+    group: test
+    dependsOn:
+      - build
+    presentation:
+      echo: true
+      reveal: true
+  clean:
+    label: Clean build artifacts
+    type: shell
+    command: dotnet clean
+    group: build
+  restore:
+    label: Restore packages
+    type: shell
+    command: dotnet restore
+  yaml-test:
+    label: YAML specific task
+    type: shell
+    command: echo "This task is from YAML"

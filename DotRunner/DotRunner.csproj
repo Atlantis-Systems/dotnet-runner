@@ -10,11 +10,12 @@
     <PackageId>DotRunner</PackageId>
     <Version>1.0.0</Version>
     <Authors>Kasper</Authors>
-    <Description>A .NET tool for running tasks defined in tasks.json files</Description>
+    <Description>A .NET tool for running tasks defined in tasks.json or tasks.yaml files</Description>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
+    <PackageReference Include="YamlDotNet" Version="16.3.0" />
   </ItemGroup>
 
 </Project>

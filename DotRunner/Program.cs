@@ -3,8 +3,8 @@ using DotRunner.Services;
 
 var fileOption = new Option<string>(
     aliases: ["--file", "-f"],
-    description: "Path to the tasks.json file",
-    getDefaultValue: () => "tasks.json");
+    description: "Path to the tasks file (tasks.json or tasks.yaml)",
+    getDefaultValue: () => File.Exists("tasks.yaml") ? "tasks.yaml" : "tasks.json");
 
 var concurrentOption = new Option<bool>(
     aliases: ["--concurrent", "-c"],
@@ -22,12 +22,17 @@ var runCommand = new Command("run", "Run a specific task")
     concurrentOption
 };
 
-var initCommand = new Command("init", "Initialize a new tasks.json file");
+var initCommand = new Command("init", "Initialize a new tasks file");
+var formatOption = new Option<string>(
+    aliases: ["--format"],
+    description: "File format (json or yaml)",
+    getDefaultValue: () => "json");
+initCommand.AddOption(formatOption);
 
 var taskArgument = new Argument<string>("task", "Name of the task to run");
 runCommand.Add(taskArgument);
 
-var rootCommand = new RootCommand("A .NET tool for running tasks defined in tasks.json files")
+var rootCommand = new RootCommand("A .NET tool for running tasks defined in tasks.json or tasks.yaml files")
 {
     listCommand,
     runCommand,
@@ -66,7 +71,7 @@ runCommand.SetHandler(async (string file, string task, bool concurrent) =>
     }
 }, fileOption, taskArgument, concurrentOption);
 
-initCommand.SetHandler(() =>
+initCommand.SetHandler((string format) =>
 {
     try
     {
@@ -112,22 +117,70 @@ initCommand.SetHandler(() =>
         }
         """;
 
-        if (File.Exists("tasks.json"))
+        var defaultTasksYaml = """
+        version: "2.0.0"
+        tasks:
+          build:
+            label: Build the project
+            type: shell
+            command: dotnet build
+            group: build
+            presentation:
+              echo: true
+              reveal: true
+              focus: false
+              panel: shared
+          test:
+            label: Run tests
+            type: shell
+            command: dotnet test
+            group: test
+            dependsOn:
+              - build
+            presentation:
+              echo: true
+              reveal: true
+          clean:
+            label: Clean build artifacts
+            type: shell
+            command: dotnet clean
+            group: build
+          restore:
+            label: Restore packages
+            type: shell
+            command: dotnet restore
+        """;
+
+        string fileName;
+        string content;
+        
+        if (format.ToLowerInvariant() == "yaml" || format.ToLowerInvariant() == "yml")
         {
-            Console.WriteLine("tasks.json already exists in the current directory.");
+            fileName = "tasks.yaml";
+            content = defaultTasksYaml;
+        }
+        else
+        {
+            fileName = "tasks.json";
+            content = defaultTasksJson;
+        }
+
+        if (File.Exists(fileName))
+        {
+            Console.WriteLine($"{fileName} already exists in the current directory.");
             Environment.Exit(1);
         }
 
-        File.WriteAllText("tasks.json", defaultTasksJson);
-        Console.WriteLine("Created tasks.json with default .NET tasks.");
+        File.WriteAllText(fileName, content);
+        Console.WriteLine($"Created {fileName} with default .NET tasks.");
         Environment.Exit(0);
     }
     catch (Exception ex)
     {
-        Console.Error.WriteLine($"Error creating tasks.json: {ex.Message}");
+        Console.Error.WriteLine($"Error creating tasks file: {ex.Message}");
         Environment.Exit(1);
     }
-});
+}, formatOption);
 
 rootCommand.SetHandler((string file, bool concurrent) =>
 {
@@ -146,7 +199,7 @@ if (args.Length > 0)
         try
         {
             // Try to load tasks and see if first argument matches a task name
-            var file = "tasks.json";
+            var file = File.Exists("tasks.yaml") ? "tasks.yaml" : "tasks.json";
             var concurrent = true;
             
             // Parse file and concurrent options from remaining args

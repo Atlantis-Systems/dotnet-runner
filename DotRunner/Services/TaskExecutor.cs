@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Text.Json;
 using DotRunner.Models;
+using YamlDotNet.Serialization;
+using YamlDotNet.Serialization.NamingConventions;
 
 namespace DotRunner.Services;
 
@@ -22,11 +24,31 @@ public class TaskExecutor
         if (!File.Exists(filePath))
             throw new FileNotFoundException($"Tasks file not found: {filePath}");
 
-        var json = File.ReadAllText(filePath);
-        var config = JsonSerializer.Deserialize<TasksConfig>(json, new JsonSerializerOptions
+        var fileContent = File.ReadAllText(filePath);
+        TasksConfig? config = null;
+        
+        var extension = Path.GetExtension(filePath).ToLowerInvariant();
+        
+        switch (extension)
         {
-            PropertyNameCaseInsensitive = true
-        });
+            case ".json":
+                config = JsonSerializer.Deserialize<TasksConfig>(fileContent, new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                });
+                break;
+                
+            case ".yaml":
+            case ".yml":
+                var deserializer = new DeserializerBuilder()
+                    .WithNamingConvention(CamelCaseNamingConvention.Instance)
+                    .Build();
+                config = deserializer.Deserialize<TasksConfig>(fileContent);
+                break;
+                
+            default:
+                throw new NotSupportedException($"File extension '{extension}' is not supported. Use .json, .yaml, or .yml files.");
+        }
 
         return new TaskExecutor(config?.Tasks ?? new Dictionary<string, TaskDefinition>(), allowConcurrency);
     }
@@ -121,9 +143,7 @@ public class TaskExecutor
         
         var originalColor = Console.ForegroundColor;
         Console.ForegroundColor = color;
-        var coloredLabel = $"\u001b[1m({displayLabel})\u001b[0m";
         Console.ForegroundColor = originalColor;
-        
         return $"\u001b[1m\u001b[{GetAnsiColorCode(color)}m({displayLabel})\u001b[0m";
     }
     
