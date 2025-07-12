@@ -219,8 +219,10 @@ if (args.Length > 0)
             var executor = TaskExecutor.LoadFromFile(file, concurrent);
             if (executor.HasTask(firstArg))
             {
-                var result = await executor.ExecuteTaskAsync(firstArg);
-                return result;
+                // Insert "run" command to handle task execution through normal flow
+                var newArgs = new List<string> { "run", firstArg };
+                newArgs.AddRange(args.Skip(1));
+                args = newArgs.ToArray();
             }
         }
         catch

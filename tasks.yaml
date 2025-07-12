@@ -24,7 +24,9 @@ tasks:
       - restore
   yaml-test:
     label: YAML specific task
-    command: echo "This task is from YAML"
+    command: echo
+    args:
+      - "This task is from YAML"
   parallel-yaml-example:
     label: Example of parallel task in YAML
     command: echo
