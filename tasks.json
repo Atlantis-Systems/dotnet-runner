@@ -1,39 +1,57 @@
 {
-  "version": "2.0.0",
   "tasks": {
     "build": {
       "label": "Build the project",
-      "type": "shell",
       "command": "dotnet build",
-      "group": "build",
-      "presentation": {
-        "echo": true,
-        "reveal": true,
-        "focus": false,
-        "panel": "shared"
-      }
+      "args": [
+        "build",
+        "--configuration",
+        "Release"
+      ]
     },
     "test": {
       "label": "Run tests",
-      "type": "shell", 
-      "command": "dotnet test",
-      "group": "test",
+      "command": "dotnet",
+      "args": [
+        "test"
+      ],
       "dependsOn": ["build"],
-      "presentation": {
-        "echo": true,
-        "reveal": true
-      }
+      "allowConcurrent": true,
+      "echo": true
     },
     "clean": {
       "label": "Clean build artifacts",
       "type": "shell",
-      "command": "dotnet clean",
-      "group": "build"
+      "command": "dotnet",
+      "args": [
+        "clean"
+      ]
     },
     "restore": {
       "label": "Restore packages",
       "type": "shell",
-      "command": "dotnet restore"
+      "command": "dotnet",
+      "args": [
+        "restore"
+      ]
+    },
+    "hello": {
+      "label": "Hello World Example",
+      "type": "shell",
+      "command": "echo",
+      "args": ["Hello from dotnet-runner!"]
+    },
+    "test-no-label": {
+      "type": "shell",
+      "command": "echo",
+      "args": ["This task has no label"]
+    },
+    "parallel-example": {
+      "label": "Example of parallel task",
+      "type": "shell",
+      "command": "echo",
+      "args": ["This task can run in parallel with others"],
+      "allowConcurrent": true
     }
   }
 }

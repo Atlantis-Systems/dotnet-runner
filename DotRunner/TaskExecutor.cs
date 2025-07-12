@@ -178,12 +178,12 @@ public class TaskExecutor
             {
                 if (OperatingSystem.IsWindows())
                 {
-                    processInfo.FileName = task.Options.Shell ?? "cmd.exe";
+                    processInfo.FileName = task.Shell ?? "cmd.exe";
                     processInfo.Arguments = $"/c \"{task.Command}\"";
                 }
                 else
                 {
-                    processInfo.FileName = task.Options.Shell ?? "/bin/bash";
+                    processInfo.FileName = task.Shell ?? "/bin/bash";
                     processInfo.Arguments = $"-c \"{task.Command}\"";
                 }
             }
@@ -199,12 +199,12 @@ public class TaskExecutor
             return 1;
         }
 
-        if (!string.IsNullOrEmpty(task.Options.Cwd))
+        if (!string.IsNullOrEmpty(task.Cwd))
         {
-            processInfo.WorkingDirectory = task.Options.Cwd;
+            processInfo.WorkingDirectory = task.Cwd;
         }
 
-        foreach (var env in task.Options.Env)
+        foreach (var env in task.Env)
         {
             processInfo.Environment[env.Key] = env.Value;
         }
@@ -216,7 +216,7 @@ public class TaskExecutor
 
         using var process = new Process { StartInfo = processInfo };
 
-        if (task.Presentation.Echo)
+        if (task.Echo)
         {
             var taskLabel = GetColoredTaskLabel(taskName);
             process.OutputDataReceived += (_, e) => { if (e.Data != null) Console.WriteLine($"{taskLabel} {e.Data}"); };
@@ -225,7 +225,7 @@ public class TaskExecutor
 
         process.Start();
 
-        if (task.Presentation.Echo)
+        if (task.Echo)
         {
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
