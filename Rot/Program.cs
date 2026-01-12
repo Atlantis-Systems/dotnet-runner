@@ -1,5 +1,5 @@
 using System.CommandLine;
-using Dot.Services;
+using Rot.Services;
 
 var fileOption = new Option<string>(
     aliases: ["--file", "-f"],
@@ -185,7 +185,7 @@ initCommand.SetHandler((string format) =>
 rootCommand.SetHandler((string file, bool concurrent) =>
 {
     // Show help when no arguments provided
-    Console.WriteLine("Use 'dot --help' for usage information.");
+    Console.WriteLine("Use 'rot --help' for usage information.");
 }, fileOption, concurrentOption);
 
 // Pre-process arguments to handle direct task execution

@@ -1,4 +1,4 @@
-# Dot
+# Rot
 
 A .NET global tool for running tasks defined in `tasks.json` files, similar to VS Code's task runner.
 
@@ -6,17 +6,17 @@ A .NET global tool for running tasks defined in `tasks.json` files, similar to V
 
 Install as a global .NET tool:
 ```bash
-dotnet tool install --global Dot
+dotnet tool install --global Rot
 ```
 
 Initialize a new tasks.json file:
 ```bash
-dot init
+rot init
 ```
 
 Run a task:
 ```bash
-dot run build
+rot run build
 ```
 
 ## Features
@@ -29,7 +29,7 @@ dot run build
 
 ## Documentation
 
-See [Dot/README.md](Dot/README.md) for detailed documentation and examples.
+See [Rot/README.md](Rot/README.md) for detailed documentation and examples.
 
 ## Development
 
