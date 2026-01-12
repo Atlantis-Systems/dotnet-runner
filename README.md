@@ -1,4 +1,4 @@
-# DotRunner
+# Dot
 
 A .NET global tool for running tasks defined in `tasks.json` files, similar to VS Code's task runner.
 
@@ -6,17 +6,17 @@ A .NET global tool for running tasks defined in `tasks.json` files, similar to V
 
 Install as a global .NET tool:
 ```bash
-dotnet tool install --global DotRunner
+dotnet tool install --global Dot
 ```
 
 Initialize a new tasks.json file:
 ```bash
-dotnet-runner init
+dot init
 ```
 
 Run a task:
 ```bash
-dotnet-runner run build
+dot run build
 ```
 
 ## Features
@@ -29,7 +29,7 @@ dotnet-runner run build
 
 ## Documentation
 
-See [DotRunner/README.md](DotRunner/README.md) for detailed documentation and examples.
+See [Dot/README.md](Dot/README.md) for detailed documentation and examples.
 
 ## Development
 

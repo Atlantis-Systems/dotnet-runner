@@ -1,5 +1,5 @@
 using System.CommandLine;
-using DotRunner.Services;
+using Dot.Services;
 
 var fileOption = new Option<string>(
     aliases: ["--file", "-f"],
@@ -185,7 +185,7 @@ initCommand.SetHandler((string format) =>
 rootCommand.SetHandler((string file, bool concurrent) =>
 {
     // Show help when no arguments provided
-    Console.WriteLine("Use 'dotnet-runner --help' for usage information.");
+    Console.WriteLine("Use 'dot --help' for usage information.");
 }, fileOption, concurrentOption);
 
 // Pre-process arguments to handle direct task execution
