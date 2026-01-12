@@ -1,7 +1,7 @@
-# Dot
+# Rot
 
-[![CI](https://github.com/yourusername/Dot/actions/workflows/ci.yml/badge.svg)](https://github.com/yourusername/Dot/actions/workflows/ci.yml)
-[![NuGet](https://img.shields.io/nuget/v/Dot.svg)](https://www.nuget.org/packages/Dot/)
+[![CI](https://github.com/yourusername/Rot/actions/workflows/ci.yml/badge.svg)](https://github.com/yourusername/Rot/actions/workflows/ci.yml)
+[![NuGet](https://img.shields.io/nuget/v/Rot.svg)](https://www.nuget.org/packages/Rot/)
 
 A .NET global tool for running tasks defined in `tasks.json` files, similar to VS Code's task runner.
 
@@ -10,26 +10,26 @@ A .NET global tool for running tasks defined in `tasks.json` files, similar to V
 Install as a global .NET tool:
 
 ```bash
-dotnet tool install --global Dot
+dotnet tool install --global Rot
 ```
 
 ## Usage
 
 ### Initialize a new tasks.json file
 ```bash
-dot init
+rotinit
 ```
 
 ### List available tasks
 ```bash
-dot list
-dot list --file custom-tasks.json
+rotlist
+rotlist --file custom-tasks.json
 ```
 
 ### Run a task
 ```bash
-dot run build
-dot run test --file custom-tasks.json
+rotrun build
+rotrun test --file custom-tasks.json
 ```
 
 ## Task Configuration

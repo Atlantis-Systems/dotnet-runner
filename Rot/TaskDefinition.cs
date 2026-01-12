@@ -1,4 +1,4 @@
-namespace Dot.Models;
+namespace Rot.Models;
 
 public class TaskDefinition
 {

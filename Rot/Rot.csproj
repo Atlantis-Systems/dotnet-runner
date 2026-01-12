@@ -6,8 +6,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PackAsTool>true</PackAsTool>
-    <ToolCommandName>dot</ToolCommandName>
-    <PackageId>Dot</PackageId>
+    <ToolCommandName>rot</ToolCommandName>
+    <PackageId>Rot</PackageId>
     <Version>1.0.0</Version>
     <Authors>Kasper</Authors>
     <Description>A .NET tool for running tasks defined in tasks.json or tasks.yaml files</Description>

@@ -1,10 +1,10 @@
 using System.Diagnostics;
 using System.Text.Json;
-using Dot.Models;
+using Rot.Models;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
 
-namespace Dot.Services;
+namespace Rot.Services;
 
 public class TaskExecutor
 {
