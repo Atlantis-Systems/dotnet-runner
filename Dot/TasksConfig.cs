@@ -1,4 +1,4 @@
-namespace DotRunner.Models;
+namespace Dot.Models;
 
 public class TasksConfig
 {

@@ -6,8 +6,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PackAsTool>true</PackAsTool>
-    <ToolCommandName>dotnet-runner</ToolCommandName>
-    <PackageId>DotRunner</PackageId>
+    <ToolCommandName>dot</ToolCommandName>
+    <PackageId>Dot</PackageId>
     <Version>1.0.0</Version>
     <Authors>Kasper</Authors>
     <Description>A .NET tool for running tasks defined in tasks.json or tasks.yaml files</Description>

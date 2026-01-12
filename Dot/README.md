@@ -1,7 +1,7 @@
-# DotRunner
+# Dot
 
-[![CI](https://github.com/yourusername/DotRunner/actions/workflows/ci.yml/badge.svg)](https://github.com/yourusername/DotRunner/actions/workflows/ci.yml)
-[![NuGet](https://img.shields.io/nuget/v/DotRunner.svg)](https://www.nuget.org/packages/DotRunner/)
+[![CI](https://github.com/yourusername/Dot/actions/workflows/ci.yml/badge.svg)](https://github.com/yourusername/Dot/actions/workflows/ci.yml)
+[![NuGet](https://img.shields.io/nuget/v/Dot.svg)](https://www.nuget.org/packages/Dot/)
 
 A .NET global tool for running tasks defined in `tasks.json` files, similar to VS Code's task runner.
 
@@ -10,26 +10,26 @@ A .NET global tool for running tasks defined in `tasks.json` files, similar to V
 Install as a global .NET tool:
 
 ```bash
-dotnet tool install --global DotRunner
+dotnet tool install --global Dot
 ```
 
 ## Usage
 
 ### Initialize a new tasks.json file
 ```bash
-dotnet-runner init
+dot init
 ```
 
 ### List available tasks
 ```bash
-dotnet-runner list
-dotnet-runner list --file custom-tasks.json
+dot list
+dot list --file custom-tasks.json
 ```
 
 ### Run a task
 ```bash
-dotnet-runner run build
-dotnet-runner run test --file custom-tasks.json
+dot run build
+dot run test --file custom-tasks.json
 ```
 
 ## Task Configuration
