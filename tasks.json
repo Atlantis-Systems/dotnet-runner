@@ -2,38 +2,25 @@
   "tasks": {
     "build": {
       "label": "Build the project",
-      "command": "dotnet build",
-      "args": [
-        "build",
-        "--configuration",
-        "Release"
-      ]
+      "type": "shell",
+      "command": "dotnet build --configuration Release"
     },
     "test": {
       "label": "Run tests",
-      "command": "dotnet",
-      "args": [
-        "test"
-      ],
+      "type": "shell",
+      "command": "dotnet test",
       "dependsOn": ["build"],
-      "allowConcurrent": true,
-      "echo": true
+      "allowConcurrent": true
     },
     "clean": {
       "label": "Clean build artifacts",
       "type": "shell",
-      "command": "dotnet",
-      "args": [
-        "clean"
-      ]
+      "command": "dotnet clean"
     },
     "restore": {
       "label": "Restore packages",
       "type": "shell",
-      "command": "dotnet",
-      "args": [
-        "restore"
-      ]
+      "command": "dotnet restore"
     },
     "hello": {
       "label": "Hello World Example",
@@ -41,16 +28,37 @@
       "command": "echo",
       "args": ["Hello from dotnet-runner!"]
     },
-    "test-no-label": {
+    "echo-env": {
+      "label": "Example with environment variables",
       "type": "shell",
-      "command": "echo",
-      "args": ["This task has no label"]
+      "command": "echo $MY_VAR",
+      "env": {
+        "MY_VAR": "custom value"
+      }
+    },
+    "custom-dir": {
+      "label": "Example with custom working directory",
+      "type": "shell",
+      "command": "pwd",
+      "cwd": "/tmp"
+    },
+    "silent-task": {
+      "label": "Task with no output echoing",
+      "type": "shell",
+      "command": "echo This will not be shown",
+      "echo": false
+    },
+    "process-example": {
+      "label": "Process type example",
+      "type": "process",
+      "command": "dotnet",
+      "args": ["--version"]
     },
     "parallel-example": {
       "label": "Example of parallel task",
       "type": "shell",
-      "command": "echo",
-      "args": ["This task can run in parallel with others"],
+      "command": "echo This task can run dependencies in parallel",
+      "dependsOn": ["build", "restore"],
       "allowConcurrent": true
     }
   }
