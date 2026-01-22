@@ -1,4 +1,5 @@
 using System.CommandLine;
+using Rot.Logging;
 using Rot.Services;
 
 var fileOption = new Option<string>(
@@ -11,6 +12,26 @@ var concurrentOption = new Option<bool>(
     description: "Enable concurrent execution of tasks",
     getDefaultValue: () => true);
 
+var dryRunOption = new Option<bool>(
+    aliases: ["--dry-run", "-n"],
+    description: "Preview what would be executed without running commands",
+    getDefaultValue: () => false);
+
+var verboseOption = new Option<bool>(
+    aliases: ["--verbose", "-v"],
+    description: "Show detailed execution information",
+    getDefaultValue: () => false);
+
+var quietOption = new Option<bool>(
+    aliases: ["--quiet", "-q"],
+    description: "Only show errors",
+    getDefaultValue: () => false);
+
+var logFileOption = new Option<string?>(
+    aliases: ["--log-file"],
+    description: "Write logs to a file",
+    getDefaultValue: () => null);
+
 var listCommand = new Command("list", "List all available tasks")
 {
     fileOption
@@ -19,7 +40,11 @@ var listCommand = new Command("list", "List all available tasks")
 var runCommand = new Command("run", "Run a specific task")
 {
     fileOption,
-    concurrentOption
+    concurrentOption,
+    dryRunOption,
+    verboseOption,
+    quietOption,
+    logFileOption
 };
 
 var initCommand = new Command("init", "Initialize a new tasks file");
@@ -38,7 +63,8 @@ var rootCommand = new RootCommand("A .NET tool for running tasks defined in task
     runCommand,
     initCommand,
     fileOption,
-    concurrentOption
+    concurrentOption,
+    dryRunOption
 };
 
 listCommand.SetHandler((string file) =>
@@ -56,12 +82,14 @@ listCommand.SetHandler((string file) =>
     }
 }, fileOption);
 
-runCommand.SetHandler(async (string file, string task, bool concurrent) =>
+runCommand.SetHandler(async (string file, string task, bool concurrent, bool dryRun, bool verbose, bool quiet, string? logFile) =>
 {
     try
     {
-        var executor = TaskExecutor.LoadFromFile(file, concurrent);
+        ITaskLogger logger = CreateLogger(verbose, quiet, logFile);
+        var executor = TaskExecutor.LoadFromFile(file, concurrent, dryRun, logger);
         var result = await executor.ExecuteTaskAsync(task);
+        (logger as IDisposable)?.Dispose();
         Environment.Exit(result);
     }
     catch (Exception ex)
@@ -69,7 +97,7 @@ runCommand.SetHandler(async (string file, string task, bool concurrent) =>
         Console.Error.WriteLine($"Error: {ex.Message}");
         Environment.Exit(1);
     }
-}, fileOption, taskArgument, concurrentOption);
+}, fileOption, taskArgument, concurrentOption, dryRunOption, verboseOption, quietOption, logFileOption);
 
 initCommand.SetHandler((string format) =>
 {
@@ -182,41 +210,54 @@ initCommand.SetHandler((string format) =>
     }
 }, formatOption);
 
-rootCommand.SetHandler((string file, bool concurrent) =>
+rootCommand.SetHandler((string file, bool concurrent, bool dryRun) =>
 {
     // Show help when no arguments provided
     Console.WriteLine("Use 'rot --help' for usage information.");
-}, fileOption, concurrentOption);
+}, fileOption, concurrentOption, dryRunOption);
+
+ITaskLogger CreateLogger(bool verbose, bool quiet, string? logFile)
+{
+    LogLevel level;
+    if (quiet)
+        level = LogLevel.Error;
+    else if (verbose)
+        level = LogLevel.Debug;
+    else
+        level = LogLevel.Info;
+
+    if (!string.IsNullOrEmpty(logFile))
+    {
+        return new FileLogger(logFile, level);
+    }
+
+    return new ConsoleLogger(level);
+}
 
 // Pre-process arguments to handle direct task execution
 if (args.Length > 0)
 {
     var firstArg = args[0];
-    
+
     // Skip if it's a known command or starts with -- (option)
-    if (firstArg != "list" && firstArg != "run" && firstArg != "init" && !firstArg.StartsWith("--"))
+    if (firstArg != "list" && firstArg != "run" && firstArg != "init" && !firstArg.StartsWith("--") && !firstArg.StartsWith("-"))
     {
         try
         {
             // Try to load tasks and see if first argument matches a task name
             var file = File.Exists("tasks.yaml") ? "tasks.yaml" : "tasks.json";
-            var concurrent = true;
-            
-            // Parse file and concurrent options from remaining args
+
+            // Parse file option from remaining args
             for (int i = 1; i < args.Length; i++)
             {
                 if ((args[i] == "--file" || args[i] == "-f") && i + 1 < args.Length)
                 {
                     file = args[i + 1];
-                    i++; // Skip the value
-                }
-                else if (args[i] == "--concurrent" || args[i] == "-c")
-                {
-                    concurrent = true;
+                    break;
                 }
             }
-            
-            var executor = TaskExecutor.LoadFromFile(file, concurrent);
+
+            var executor = TaskExecutor.LoadFromFile(file);
             if (executor.HasTask(firstArg))
             {
                 // Insert "run" command to handle task execution through normal flow

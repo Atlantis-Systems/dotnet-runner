@@ -12,5 +12,6 @@ public class TaskDefinition
     public bool Echo { get; set; } = true;
     public string[] DependsOn { get; set; } = Array.Empty<string>();
     public bool AllowConcurrent { get; set; } = false;
+    public int? Timeout { get; set; }
 }
 
