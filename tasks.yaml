@@ -27,6 +27,14 @@ tasks:
     command: echo
     args:
       - "This task is from YAML"
+  echo-env:
+    label: Example with environment variables
+    command: echo
+    args:
+      - "$MY_VAR $ANOTHER_VAR"
+    env:
+      MY_VAR: "Hello from YAML"
+      ANOTHER_VAR: "custom value"
   parallel-yaml-example:
     label: Example of parallel task in YAML
     command: echo
@@ -38,3 +46,12 @@ tasks:
     args:
       - "This YAML task can run in parallel"
     allowConcurrent: true
+  custom-dir-env:
+    label: Example with custom directory and environment
+    command: sh
+    args:
+      - "-c"
+      - "echo Working in: $(pwd) with VAR=$BUILD_ENV"
+    cwd: "/tmp"
+    env:
+      BUILD_ENV: "production"
