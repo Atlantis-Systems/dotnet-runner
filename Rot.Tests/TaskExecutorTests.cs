@@ -109,7 +109,7 @@ public class TaskExecutorTests
                 Type = "shell"
             }
         };
-        var executor = new TaskExecutor(tasks, dryRun: true);
+        var executor = new TaskExecutor(tasks, dryRun: true, aliases: null);
 
         var result = await executor.ExecuteTaskAsync("write-file");
 
@@ -354,7 +354,7 @@ public class TaskExecutorTests
             ["greeting"] = "Hello",
             ["name"] = "World"
         };
-        var executor = new TaskExecutor(tasks, variables);
+        var executor = new TaskExecutor(tasks, variables: variables);
 
         var result = await executor.ExecuteTaskAsync("greet");
 

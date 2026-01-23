@@ -7,5 +7,8 @@ public class TasksConfig
 
     // Phase 3: Profile support
     public Dictionary<string, TaskProfile> Profiles { get; set; } = new();
+
+    // Phase 4: Task aliases
+    public Dictionary<string, string[]> Aliases { get; set; } = new();
 }
 

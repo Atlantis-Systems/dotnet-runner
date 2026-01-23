@@ -4,8 +4,8 @@ using Rot.Services;
 
 var fileOption = new Option<string>(
     aliases: ["--file", "-f"],
-    description: "Path to the tasks file (tasks.json or tasks.yaml)",
-    getDefaultValue: () => File.Exists("tasks.yaml") ? "tasks.yaml" : "tasks.json");
+    description: "Path to the tasks file (tasks.json or tasks.yaml). Auto-discovers up the directory tree if not specified.",
+    getDefaultValue: () => TasksFileDiscovery.FindTasksFileOrDefault(null));
 
 var concurrentOption = new Option<bool>(
     aliases: ["--concurrent", "-c"],
@@ -99,6 +99,17 @@ var watchCommand = new Command("watch", "Watch for file changes and re-run a tas
     quietOption,
     logFileOption
 };
+
+var completionCommand = new Command("completion", "Generate shell completion scripts");
+var shellArgument = new Argument<string>("shell", "Shell type: bash, zsh, fish, or powershell");
+completionCommand.Add(shellArgument);
+
+var graphCommand = new Command("graph", "Display task dependency graph")
+{
+    fileOption
+};
+var graphTaskArgument = new Argument<string?>("task", () => null, "Show graph for a specific task (optional)");
+graphCommand.Add(graphTaskArgument);
 var watchTaskArgument = new Argument<string>("task", "Name of the task to run on changes");
 var globOption = new Option<string>(
     aliases: ["--glob"],
@@ -122,6 +133,8 @@ var rootCommand = new RootCommand("A .NET tool for running tasks defined in task
     initCommand,
     describeCommand,
     watchCommand,
+    graphCommand,
+    completionCommand,
     fileOption,
     concurrentOption,
     dryRunOption
@@ -168,7 +181,15 @@ runCommand.SetHandler(async (string file, string? task, bool concurrent, bool dr
         }
         else if (!string.IsNullOrEmpty(task))
         {
-            result = await executor.ExecuteTaskAsync(task);
+            // Check if it's an alias first
+            if (executor.HasAlias(task))
+            {
+                result = await executor.ExecuteAliasAsync(task);
+            }
+            else
+            {
+                result = await executor.ExecuteTaskAsync(task);
+            }
         }
         else
         {
@@ -193,7 +214,7 @@ initCommand.SetHandler((string format) =>
     {
         var defaultTasksJson = """
         {
-          "version": "3.0.0",
+          "version": "4.0.0",
           "variables": {
             "config": "Debug",
             "outputDir": "./bin"
@@ -207,6 +228,10 @@ initCommand.SetHandler((string format) =>
               "variables": { "config": "Release" },
               "env": { "DOTNET_ENVIRONMENT": "Production" }
             }
+          },
+          "aliases": {
+            "ci": ["restore", "build", "test"],
+            "rebuild": ["clean", "build"]
           },
           "tasks": {
             "build": {
@@ -255,7 +280,7 @@ initCommand.SetHandler((string format) =>
         """;
 
         var defaultTasksYaml = """
-        version: "3.0.0"
+        version: "4.0.0"
         variables:
           config: Debug
           outputDir: ./bin
@@ -270,6 +295,14 @@ initCommand.SetHandler((string format) =>
               config: Release
             env:
               DOTNET_ENVIRONMENT: Production
+        aliases:
+          ci:
+            - restore
+            - build
+            - test
+          rebuild:
+            - clean
+            - build
         tasks:
           build:
             label: Build the project
@@ -366,6 +399,36 @@ describeCommand.SetHandler((string file, string task) =>
         Environment.Exit(1);
     }
 }, fileOption, describeTaskArgument);
+
+completionCommand.SetHandler((string shell) =>
+{
+    try
+    {
+        var completion = ShellCompletionGenerator.Generate(shell);
+        Console.WriteLine(completion);
+        Environment.Exit(0);
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"Error: {ex.Message}");
+        Environment.Exit(1);
+    }
+}, shellArgument);
+
+graphCommand.SetHandler((string file, string? task) =>
+{
+    try
+    {
+        var executor = TaskExecutor.LoadFromFile(file);
+        executor.PrintGraph(task);
+        Environment.Exit(0);
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"Error: {ex.Message}");
+        Environment.Exit(1);
+    }
+}, fileOption, graphTaskArgument);
 
 watchCommand.SetHandler(async (string file, string task, string glob, int debounce, bool concurrent, bool verbose, bool quiet, string? logFile) =>
 {
@@ -504,7 +567,7 @@ ITaskLogger CreateLogger(bool verbose, bool quiet, string? logFile)
 if (args.Length > 0)
 {
     var firstArg = args[0];
-    var knownCommands = new[] { "list", "run", "init", "describe", "watch" };
+    var knownCommands = new[] { "list", "run", "init", "describe", "watch", "graph", "completion" };
 
     // Skip if it's a known command or starts with -- (option)
     if (!knownCommands.Contains(firstArg) && !firstArg.StartsWith("--") && !firstArg.StartsWith("-"))
@@ -512,7 +575,7 @@ if (args.Length > 0)
         try
         {
             // Try to load tasks and see if first argument matches a task name
-            var file = File.Exists("tasks.yaml") ? "tasks.yaml" : "tasks.json";
+            string? file = null;
 
             // Parse file option from remaining args
             for (int i = 1; i < args.Length; i++)
@@ -524,10 +587,13 @@ if (args.Length > 0)
                 }
             }
 
+            // Use auto-discovery if not specified
+            file = TasksFileDiscovery.FindTasksFileOrDefault(file);
+
             var executor = TaskExecutor.LoadFromFile(file);
-            if (executor.HasTask(firstArg))
+            if (executor.HasTaskOrAlias(firstArg))
             {
-                // Insert "run" command to handle task execution through normal flow
+                // Insert "run" command to handle task/alias execution through normal flow
                 var newArgs = new List<string> { "run", firstArg };
                 newArgs.AddRange(args.Skip(1));
                 args = newArgs.ToArray();

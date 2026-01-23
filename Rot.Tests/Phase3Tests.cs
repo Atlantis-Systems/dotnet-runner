@@ -318,7 +318,7 @@ public class Phase3Tests
         {
             ["PROFILE_VAR"] = "profile-value"
         };
-        var executor = new TaskExecutor(tasks, profileEnv: profileEnv);
+        var executor = new TaskExecutor(tasks, aliases: null, profileEnv: profileEnv);
 
         var result = await executor.ExecuteTaskAsync("check-env");
 
@@ -344,7 +344,7 @@ public class Phase3Tests
         {
             ["OVERRIDE_VAR"] = "profile-value"
         };
-        var executor = new TaskExecutor(tasks, profileEnv: profileEnv);
+        var executor = new TaskExecutor(tasks, aliases: null, profileEnv: profileEnv);
 
         var result = await executor.ExecuteTaskAsync("check-env");
 
@@ -530,7 +530,7 @@ public class Phase3Tests
             };
 
             // First run with cache
-            var executor1 = new TaskExecutor(tasks, noCache: false);
+            var executor1 = new TaskExecutor(tasks, aliases: null, noCache: false);
             await executor1.ExecuteTaskAsync("cached-task");
 
             // Delete output file
@@ -538,7 +538,7 @@ public class Phase3Tests
                 File.Delete(outputFile);
 
             // Second run with noCache - should execute
-            var executor2 = new TaskExecutor(tasks, noCache: true);
+            var executor2 = new TaskExecutor(tasks, aliases: null, noCache: true);
             await executor2.ExecuteTaskAsync("cached-task");
 
             Assert.True(File.Exists(outputFile));
