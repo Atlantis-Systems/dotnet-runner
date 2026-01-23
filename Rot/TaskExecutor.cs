@@ -12,30 +12,46 @@ public class TaskExecutor
 {
     private readonly Dictionary<string, TaskDefinition> _tasks;
     private readonly Dictionary<string, string> _variables;
+    private readonly Dictionary<string, string> _profileEnv;
     private readonly HashSet<string> _executingTasks = new();
+    private readonly HashSet<string> _completedTasks = new();
     private readonly SemaphoreSlim _executionSemaphore = new(1, 1);
     private readonly bool _allowConcurrency;
     private readonly bool _dryRun;
+    private readonly bool _noCache;
     private readonly ITaskLogger _logger;
+    private readonly ConditionEvaluator _conditionEvaluator;
+    private readonly CacheManager _cacheManager;
+    private readonly PluginLoader _pluginLoader;
 
     public TaskExecutor(
         Dictionary<string, TaskDefinition> tasks,
         Dictionary<string, string>? variables = null,
+        Dictionary<string, string>? profileEnv = null,
         bool allowConcurrency = false,
         bool dryRun = false,
-        ITaskLogger? logger = null)
+        bool noCache = false,
+        ITaskLogger? logger = null,
+        PluginLoader? pluginLoader = null)
     {
         _tasks = tasks;
         _variables = variables ?? new Dictionary<string, string>();
+        _profileEnv = profileEnv ?? new Dictionary<string, string>();
         _allowConcurrency = allowConcurrency;
         _dryRun = dryRun;
+        _noCache = noCache;
         _logger = logger ?? NullLogger.Instance;
+        _conditionEvaluator = new ConditionEvaluator(_logger);
+        _cacheManager = new CacheManager(_logger);
+        _pluginLoader = pluginLoader ?? new PluginLoader(_logger);
     }
 
     public static TaskExecutor LoadFromFile(
         string filePath,
         bool allowConcurrency = false,
         bool dryRun = false,
+        bool noCache = false,
+        string? profile = null,
         ITaskLogger? logger = null)
     {
         if (!File.Exists(filePath))
@@ -43,9 +59,9 @@ public class TaskExecutor
 
         var fileContent = File.ReadAllText(filePath);
         TasksConfig? config = null;
-        
+
         var extension = Path.GetExtension(filePath).ToLowerInvariant();
-        
+
         switch (extension)
         {
             case ".json":
@@ -54,7 +70,7 @@ public class TaskExecutor
                     PropertyNameCaseInsensitive = true
                 });
                 break;
-                
+
             case ".yaml":
             case ".yml":
                 var deserializer = new DeserializerBuilder()
@@ -62,13 +78,40 @@ public class TaskExecutor
                     .Build();
                 config = deserializer.Deserialize<TasksConfig>(fileContent);
                 break;
-                
+
             default:
                 throw new NotSupportedException($"File extension '{extension}' is not supported. Use .json, .yaml, or .yml files.");
         }
 
         var tasks = config?.Tasks ?? new Dictionary<string, TaskDefinition>();
-        var variables = config?.Variables ?? new Dictionary<string, string>();
+        var variables = new Dictionary<string, string>(config?.Variables ?? new Dictionary<string, string>());
+        var profileEnv = new Dictionary<string, string>();
+
+        // Apply profile if specified
+        if (!string.IsNullOrEmpty(profile) && config?.Profiles != null)
+        {
+            if (config.Profiles.TryGetValue(profile, out var selectedProfile))
+            {
+                // Merge profile variables (profile overrides base)
+                foreach (var (key, value) in selectedProfile.Variables)
+                {
+                    variables[key] = value;
+                }
+
+                // Store profile env for later application
+                foreach (var (key, value) in selectedProfile.Env)
+                {
+                    profileEnv[key] = value;
+                }
+
+                logger?.Info("Applied profile '{Profile}'", profile);
+            }
+            else
+            {
+                var availableProfiles = string.Join(", ", config.Profiles.Keys);
+                throw new InvalidOperationException($"Profile '{profile}' not found. Available profiles: {availableProfiles}");
+            }
+        }
 
         // Validate configuration
         var validator = new TaskValidator();
@@ -93,7 +136,11 @@ public class TaskExecutor
             throw new InvalidOperationException("Task configuration is invalid.");
         }
 
-        return new TaskExecutor(tasks, variables, allowConcurrency, dryRun, logger);
+        // Create plugin loader and load plugins if configured
+        var pluginLoader = new PluginLoader(logger ?? NullLogger.Instance);
+        // Note: Plugin names would come from config if we add plugins array to TasksConfig
+
+        return new TaskExecutor(tasks, variables, profileEnv, allowConcurrency, dryRun, noCache, logger, pluginLoader);
     }
 
     public async Task<int> ExecuteTaskAsync(string taskName)
@@ -107,9 +154,16 @@ public class TaskExecutor
             return 1;
         }
 
+        // Check if already completed in this session (for caching within a run)
         await _executionSemaphore.WaitAsync();
         try
         {
+            if (_completedTasks.Contains(taskName))
+            {
+                _logger.Debug("Task '{TaskName}' already completed in this session", taskName);
+                return 0;
+            }
+
             if (_executingTasks.Contains(taskName))
             {
                 _logger.Error("Circular dependency detected for task '{TaskName}'", taskName);
@@ -125,6 +179,16 @@ public class TaskExecutor
 
         var task = _tasks[taskName];
 
+        // Check conditions before executing
+        if (!_conditionEvaluator.Evaluate(task.Condition, taskName))
+        {
+            var taskLabel = GetColoredTaskLabel(taskName);
+            Console.WriteLine($"{taskLabel} Skipped (condition not met)");
+            await MarkTaskComplete(taskName);
+            return 0;
+        }
+
+        // Execute dependencies
         if (_allowConcurrency && task.AllowConcurrent && task.DependsOn.Length > 0)
         {
             _logger.Debug("Executing {Count} dependencies concurrently for task '{TaskName}'", task.DependsOn.Length, taskName);
@@ -134,8 +198,7 @@ public class TaskExecutor
             var failedDependency = dependencyResults.FirstOrDefault(r => r != 0);
             if (failedDependency != 0)
             {
-                await _executionSemaphore.WaitAsync();
-                try { _executingTasks.Remove(taskName); } finally { _executionSemaphore.Release(); }
+                await RemoveFromExecuting(taskName);
                 _logger.Error("One or more dependencies failed for task '{TaskName}'", taskName);
                 Console.WriteLine($"One or more dependencies failed for task '{taskName}'.");
                 return failedDependency;
@@ -149,8 +212,7 @@ public class TaskExecutor
                 var dependencyResult = await ExecuteTaskAsync(dependency);
                 if (dependencyResult != 0)
                 {
-                    await _executionSemaphore.WaitAsync();
-                    try { _executingTasks.Remove(taskName); } finally { _executionSemaphore.Release(); }
+                    await RemoveFromExecuting(taskName);
                     _logger.Error("Dependency '{Dependency}' failed for task '{TaskName}'", dependency, taskName);
                     Console.WriteLine($"Dependency '{dependency}' failed for task '{taskName}'.");
                     return dependencyResult;
@@ -162,9 +224,39 @@ public class TaskExecutor
         {
             var taskLabel = GetColoredTaskLabel(taskName);
 
+            // Execute pre-tasks (hooks)
+            if (task.PreTasks.Length > 0)
+            {
+                _logger.Debug("Executing {Count} pre-tasks for '{TaskName}'", task.PreTasks.Length, taskName);
+                foreach (var preTask in task.PreTasks)
+                {
+                    var preResult = await ExecuteTaskAsync(preTask);
+                    if (preResult != 0)
+                    {
+                        _logger.Error("Pre-task '{PreTask}' failed for task '{TaskName}'", preTask, taskName);
+                        Console.WriteLine($"{taskLabel} Pre-task '{preTask}' failed.");
+                        return preResult;
+                    }
+                }
+            }
+
             if (_dryRun)
             {
                 PrintDryRunInfo(task, taskName, taskLabel);
+                return 0;
+            }
+
+            // Check cache (unless disabled)
+            if (!_noCache && task.Cache != null && _cacheManager.IsCacheValid(taskName, task.Cache))
+            {
+                Console.WriteLine($"{taskLabel} Skipped (cached)");
+                await MarkTaskComplete(taskName);
+
+                // Still run post-tasks even when cached
+                if (task.PostTasks.Length > 0)
+                {
+                    return await ExecutePostTasks(task, taskName, taskLabel);
+                }
                 return 0;
             }
 
@@ -179,6 +271,24 @@ public class TaskExecutor
             {
                 _logger.Info("Task '{TaskName}' completed successfully in {Duration}ms", taskName, stopwatch.ElapsedMilliseconds);
                 Console.WriteLine($"{taskLabel} Task completed successfully.");
+
+                // Save cache on success
+                if (task.Cache != null)
+                {
+                    _cacheManager.SaveCache(taskName, task.Cache);
+                }
+
+                // Execute post-tasks (hooks) on success
+                if (task.PostTasks.Length > 0)
+                {
+                    var postResult = await ExecutePostTasks(task, taskName, taskLabel);
+                    if (postResult != 0)
+                    {
+                        return postResult;
+                    }
+                }
+
+                await MarkTaskComplete(taskName);
             }
             else if (result == -1)
             {
@@ -195,8 +305,50 @@ public class TaskExecutor
         }
         finally
         {
-            await _executionSemaphore.WaitAsync();
-            try { _executingTasks.Remove(taskName); } finally { _executionSemaphore.Release(); }
+            await RemoveFromExecuting(taskName);
+        }
+    }
+
+    private async Task<int> ExecutePostTasks(TaskDefinition task, string taskName, string taskLabel)
+    {
+        _logger.Debug("Executing {Count} post-tasks for '{TaskName}'", task.PostTasks.Length, taskName);
+        foreach (var postTask in task.PostTasks)
+        {
+            var postResult = await ExecuteTaskAsync(postTask);
+            if (postResult != 0)
+            {
+                _logger.Error("Post-task '{PostTask}' failed for task '{TaskName}'", postTask, taskName);
+                Console.WriteLine($"{taskLabel} Post-task '{postTask}' failed.");
+                return postResult;
+            }
+        }
+        return 0;
+    }
+
+    private async Task MarkTaskComplete(string taskName)
+    {
+        await _executionSemaphore.WaitAsync();
+        try
+        {
+            _completedTasks.Add(taskName);
+            _executingTasks.Remove(taskName);
+        }
+        finally
+        {
+            _executionSemaphore.Release();
+        }
+    }
+
+    private async Task RemoveFromExecuting(string taskName)
+    {
+        await _executionSemaphore.WaitAsync();
+        try
+        {
+            _executingTasks.Remove(taskName);
+        }
+        finally
+        {
+            _executionSemaphore.Release();
         }
     }
 
@@ -233,6 +385,14 @@ public class TaskExecutor
 
     private async Task<int> RunCommandAsync(TaskDefinition task, string taskName)
     {
+        // Check if this is a plugin-provided task type
+        var provider = _pluginLoader.GetProvider(task.Type);
+        if (provider != null)
+        {
+            _logger.Debug("Using plugin provider for task type '{TaskType}'", task.Type);
+            return await provider.ExecuteAsync(task, taskName, _logger);
+        }
+
         var processInfo = new ProcessStartInfo();
 
         // Apply variable substitution to command and args
@@ -267,7 +427,7 @@ public class TaskExecutor
         }
         else
         {
-            Console.WriteLine($"Unsupported task type: {task.Type}");
+            Console.WriteLine($"Unsupported task type: {task.Type}. Available types: {string.Join(", ", _pluginLoader.GetRegisteredTaskTypes())}");
             return 1;
         }
 
@@ -276,6 +436,13 @@ public class TaskExecutor
             processInfo.WorkingDirectory = SubstituteVariables(task.Cwd);
         }
 
+        // Apply profile environment variables first
+        foreach (var env in _profileEnv)
+        {
+            processInfo.Environment[env.Key] = SubstituteVariables(env.Value);
+        }
+
+        // Apply task-specific environment variables (override profile)
         foreach (var env in task.Env)
         {
             processInfo.Environment[env.Key] = SubstituteVariables(env.Value);
@@ -341,9 +508,13 @@ public class TaskExecutor
         {
             Console.WriteLine($"  Working directory: {task.Cwd}");
         }
-        if (task.Env.Count > 0)
+        if (_profileEnv.Count > 0 || task.Env.Count > 0)
         {
             Console.WriteLine($"  Environment:");
+            foreach (var env in _profileEnv)
+            {
+                Console.WriteLine($"    {env.Key}={env.Value} (profile)");
+            }
             foreach (var env in task.Env)
             {
                 Console.WriteLine($"    {env.Key}={env.Value}");
@@ -356,6 +527,22 @@ public class TaskExecutor
         if (task.DependsOn.Length > 0)
         {
             Console.WriteLine($"  Dependencies: {string.Join(", ", task.DependsOn)}");
+        }
+        if (task.PreTasks.Length > 0)
+        {
+            Console.WriteLine($"  Pre-tasks: {string.Join(", ", task.PreTasks)}");
+        }
+        if (task.PostTasks.Length > 0)
+        {
+            Console.WriteLine($"  Post-tasks: {string.Join(", ", task.PostTasks)}");
+        }
+        if (task.Condition != null)
+        {
+            Console.WriteLine($"  Condition: (configured)");
+        }
+        if (task.Cache != null)
+        {
+            Console.WriteLine($"  Cache: inputs={string.Join(", ", task.Cache.Inputs)}");
         }
     }
 
@@ -532,6 +719,48 @@ public class TaskExecutor
         if (task.DependsOn.Length > 0)
         {
             Console.WriteLine($"  Dependencies: {string.Join(", ", task.DependsOn)}");
+        }
+
+        // Phase 3: Show pre/post tasks
+        if (task.PreTasks.Length > 0)
+        {
+            Console.WriteLine($"  Pre-tasks:    {string.Join(", ", task.PreTasks)}");
+        }
+
+        if (task.PostTasks.Length > 0)
+        {
+            Console.WriteLine($"  Post-tasks:   {string.Join(", ", task.PostTasks)}");
+        }
+
+        // Phase 3: Show condition
+        if (task.Condition != null)
+        {
+            Console.WriteLine("  Condition:");
+            if (!string.IsNullOrEmpty(task.Condition.Os))
+                Console.WriteLine($"    - OS: {task.Condition.Os}");
+            if (task.Condition.Env.Count > 0)
+            {
+                foreach (var env in task.Condition.Env)
+                {
+                    Console.WriteLine($"    - Env: {env.Key}={env.Value}");
+                }
+            }
+            if (task.Condition.FileExists.Length > 0)
+                Console.WriteLine($"    - FileExists: {string.Join(", ", task.Condition.FileExists)}");
+            if (task.Condition.FileNotExists.Length > 0)
+                Console.WriteLine($"    - FileNotExists: {string.Join(", ", task.Condition.FileNotExists)}");
+        }
+
+        // Phase 3: Show cache config
+        if (task.Cache != null)
+        {
+            Console.WriteLine("  Cache:");
+            if (task.Cache.Inputs.Length > 0)
+                Console.WriteLine($"    - Inputs: {string.Join(", ", task.Cache.Inputs)}");
+            if (task.Cache.Outputs.Length > 0)
+                Console.WriteLine($"    - Outputs: {string.Join(", ", task.Cache.Outputs)}");
+            if (task.Cache.TtlMinutes.HasValue)
+                Console.WriteLine($"    - TTL: {task.Cache.TtlMinutes.Value} minutes");
         }
 
         // Find tasks that depend on this task

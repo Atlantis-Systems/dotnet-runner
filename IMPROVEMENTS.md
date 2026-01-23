@@ -672,12 +672,12 @@ public class AuditLogger
 5. ✅ Better `list` output (groups, types, dependencies)
 6. ✅ `describe` command for detailed task information
 
-### Phase 3 (Advanced Features)
-1. Conditional execution
-2. Task hooks
-3. Profile support
-4. Task caching
-5. Plugin system
+### Phase 3 (Advanced Features) ✅ COMPLETED
+1. ✅ Conditional execution (OS, env, fileExists, fileNotExists conditions)
+2. ✅ Task hooks (preTasks and postTasks)
+3. ✅ Profile support (`--profile` flag with variables and env overrides)
+4. ✅ Task caching (based on input file hashes with `--no-cache` bypass)
+5. ✅ Plugin system (ITaskTypeProvider interface and PluginLoader)
 
 ---
 

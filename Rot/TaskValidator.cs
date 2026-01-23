@@ -49,7 +49,44 @@ public class TaskValidator
             result.AddWarning($"Task '{taskName}': Working directory '{task.Cwd}' does not exist.");
         }
 
+        // Phase 3: Validate condition
+        if (task.Condition != null)
+        {
+            ValidateCondition(taskName, task.Condition, result);
+        }
+
+        // Phase 3: Validate cache config
+        if (task.Cache != null)
+        {
+            ValidateCacheConfig(taskName, task.Cache, result);
+        }
+
         return result;
+    }
+
+    private void ValidateCondition(string taskName, TaskCondition condition, ValidationResult result)
+    {
+        if (!string.IsNullOrEmpty(condition.Os))
+        {
+            var validOs = new[] { "windows", "win", "linux", "osx", "macos", "mac", "unix" };
+            if (!validOs.Contains(condition.Os.ToLowerInvariant()))
+            {
+                result.AddWarning($"Task '{taskName}': Unknown OS condition '{condition.Os}'. Valid values: {string.Join(", ", validOs)}.");
+            }
+        }
+    }
+
+    private void ValidateCacheConfig(string taskName, TaskCacheConfig cache, ValidationResult result)
+    {
+        if (cache.Inputs.Length == 0)
+        {
+            result.AddWarning($"Task '{taskName}': Cache configured but no input patterns specified.");
+        }
+
+        if (cache.TtlMinutes.HasValue && cache.TtlMinutes.Value <= 0)
+        {
+            result.AddError($"Task '{taskName}': Cache TTL must be a positive number (got {cache.TtlMinutes.Value}).");
+        }
     }
 
     public ValidationResult ValidateAll(Dictionary<string, TaskDefinition> tasks)
@@ -85,9 +122,27 @@ public class TaskValidator
                     result.AddError($"Task '{taskName}': Dependency '{dependency}' not found.");
                 }
             }
+
+            // Phase 3: Validate PreTasks references
+            foreach (var preTask in task.PreTasks)
+            {
+                if (!tasks.ContainsKey(preTask))
+                {
+                    result.AddError($"Task '{taskName}': PreTask '{preTask}' not found.");
+                }
+            }
+
+            // Phase 3: Validate PostTasks references
+            foreach (var postTask in task.PostTasks)
+            {
+                if (!tasks.ContainsKey(postTask))
+                {
+                    result.AddError($"Task '{taskName}': PostTask '{postTask}' not found.");
+                }
+            }
         }
 
-        // Detect circular dependencies
+        // Detect circular dependencies (including hooks)
         var circularDeps = DetectCircularDependencies(tasks);
         foreach (var cycle in circularDeps)
         {

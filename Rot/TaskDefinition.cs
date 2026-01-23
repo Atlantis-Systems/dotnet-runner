@@ -15,5 +15,15 @@ public class TaskDefinition
     public int? Timeout { get; set; }
     public string Group { get; set; } = string.Empty;
     public string[] Tags { get; set; } = Array.Empty<string>();
+
+    // Phase 3: Conditional execution
+    public TaskCondition? Condition { get; set; }
+
+    // Phase 3: Task hooks
+    public string[] PreTasks { get; set; } = Array.Empty<string>();
+    public string[] PostTasks { get; set; } = Array.Empty<string>();
+
+    // Phase 3: Task caching
+    public TaskCacheConfig? Cache { get; set; }
 }
 

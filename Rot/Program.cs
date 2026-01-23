@@ -47,6 +47,16 @@ var tagOption = new Option<string?>(
     description: "Run all tasks with the specified tag",
     getDefaultValue: () => null);
 
+var profileOption = new Option<string?>(
+    aliases: ["--profile"],
+    description: "Apply a profile configuration (variables and environment)",
+    getDefaultValue: () => null);
+
+var noCacheOption = new Option<bool>(
+    aliases: ["--no-cache"],
+    description: "Disable task caching",
+    getDefaultValue: () => false);
+
 var listCommand = new Command("list", "List all available tasks")
 {
     fileOption
@@ -62,7 +72,9 @@ var runCommand = new Command("run", "Run a specific task")
     logFileOption,
     groupOption,
     patternOption,
-    tagOption
+    tagOption,
+    profileOption,
+    noCacheOption
 };
 
 var initCommand = new Command("init", "Initialize a new tasks file");
@@ -130,12 +142,12 @@ listCommand.SetHandler((string file) =>
     }
 }, fileOption);
 
-runCommand.SetHandler(async (string file, string? task, bool concurrent, bool dryRun, bool verbose, bool quiet, string? logFile, string? group, string? pattern, string? tag) =>
+runCommand.SetHandler(async (string file, string? task, bool concurrent, bool dryRun, bool verbose, bool quiet, string? logFile, string? group, string? pattern, string? tag, string? profile, bool noCache) =>
 {
     try
     {
         ITaskLogger logger = CreateLogger(verbose, quiet, logFile);
-        var executor = TaskExecutor.LoadFromFile(file, concurrent, dryRun, logger);
+        var executor = TaskExecutor.LoadFromFile(file, concurrent, dryRun, noCache, profile, logger);
         int result;
 
         // Determine which tasks to run based on options
@@ -173,7 +185,7 @@ runCommand.SetHandler(async (string file, string? task, bool concurrent, bool dr
         Console.Error.WriteLine($"Error: {ex.Message}");
         Environment.Exit(1);
     }
-}, fileOption, taskArgument, concurrentOption, dryRunOption, verboseOption, quietOption, logFileOption, groupOption, patternOption, tagOption);
+}, fileOption, taskArgument, concurrentOption, dryRunOption, verboseOption, quietOption, logFileOption, groupOption, patternOption, tagOption, profileOption, noCacheOption);
 
 initCommand.SetHandler((string format) =>
 {
@@ -181,10 +193,20 @@ initCommand.SetHandler((string format) =>
     {
         var defaultTasksJson = """
         {
-          "version": "2.0.0",
+          "version": "3.0.0",
           "variables": {
             "config": "Debug",
             "outputDir": "./bin"
+          },
+          "profiles": {
+            "dev": {
+              "variables": { "config": "Debug" },
+              "env": { "DOTNET_ENVIRONMENT": "Development" }
+            },
+            "prod": {
+              "variables": { "config": "Release" },
+              "env": { "DOTNET_ENVIRONMENT": "Production" }
+            }
           },
           "tasks": {
             "build": {
@@ -192,7 +214,11 @@ initCommand.SetHandler((string format) =>
               "type": "shell",
               "command": "dotnet build -c ${config}",
               "group": "build",
-              "tags": ["ci", "dev"]
+              "tags": ["ci", "dev"],
+              "cache": {
+                "inputs": ["**/*.cs", "**/*.csproj"],
+                "outputs": ["bin/", "obj/"]
+              }
             },
             "test": {
               "label": "Run tests",
@@ -214,16 +240,36 @@ initCommand.SetHandler((string format) =>
               "type": "shell",
               "command": "dotnet restore",
               "tags": ["ci"]
+            },
+            "deploy": {
+              "label": "Deploy application",
+              "type": "shell",
+              "command": "echo Deploying...",
+              "condition": {
+                "env": { "CI": "true" }
+              },
+              "preTasks": ["build", "test"]
             }
           }
         }
         """;
 
         var defaultTasksYaml = """
-        version: "2.0.0"
+        version: "3.0.0"
         variables:
           config: Debug
           outputDir: ./bin
+        profiles:
+          dev:
+            variables:
+              config: Debug
+            env:
+              DOTNET_ENVIRONMENT: Development
+          prod:
+            variables:
+              config: Release
+            env:
+              DOTNET_ENVIRONMENT: Production
         tasks:
           build:
             label: Build the project
@@ -233,6 +279,13 @@ initCommand.SetHandler((string format) =>
             tags:
               - ci
               - dev
+            cache:
+              inputs:
+                - "**/*.cs"
+                - "**/*.csproj"
+              outputs:
+                - bin/
+                - obj/
           test:
             label: Run tests
             type: shell
@@ -256,6 +309,16 @@ initCommand.SetHandler((string format) =>
             command: dotnet restore
             tags:
               - ci
+          deploy:
+            label: Deploy application
+            type: shell
+            command: echo Deploying...
+            condition:
+              env:
+                CI: "true"
+            preTasks:
+              - build
+              - test
         """;
 
         string fileName;
@@ -309,7 +372,7 @@ watchCommand.SetHandler(async (string file, string task, string glob, int deboun
     try
     {
         ITaskLogger logger = CreateLogger(verbose, quiet, logFile);
-        var executor = TaskExecutor.LoadFromFile(file, concurrent, false, logger);
+        var executor = TaskExecutor.LoadFromFile(file, concurrent, false, false, null, logger);
 
         if (!executor.HasTask(task))
         {
@@ -375,7 +438,7 @@ watchCommand.SetHandler(async (string file, string task, string glob, int deboun
             Console.WriteLine();
 
             // Reload executor to pick up any config changes
-            var freshExecutor = TaskExecutor.LoadFromFile(file, concurrent, false, logger);
+            var freshExecutor = TaskExecutor.LoadFromFile(file, concurrent, false, false, null, logger);
             await freshExecutor.ExecuteTaskAsync(task);
         }
 
