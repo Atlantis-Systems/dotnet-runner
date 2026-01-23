@@ -1,6 +1,7 @@
 using Rot.Logging;
 using Rot.Models;
 using Rot.Services;
+using Xunit;
 
 namespace Rot.Tests;
 

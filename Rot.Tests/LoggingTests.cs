@@ -1,4 +1,5 @@
 using Rot.Logging;
+using Xunit;
 
 namespace Rot.Tests;
 
