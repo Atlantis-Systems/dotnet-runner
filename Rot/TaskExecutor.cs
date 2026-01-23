@@ -241,12 +241,12 @@ public class TaskExecutor
             {
                 if (OperatingSystem.IsWindows())
                 {
-                    processInfo.FileName = task.Shell ?? "cmd.exe";
+                    processInfo.FileName = string.IsNullOrEmpty(task.Shell) ? "cmd.exe" : task.Shell;
                     processInfo.Arguments = $"/c \"{command}\"";
                 }
                 else
                 {
-                    processInfo.FileName = task.Shell ?? "/bin/bash";
+                    processInfo.FileName = string.IsNullOrEmpty(task.Shell) ? "/bin/bash" : task.Shell;
                     processInfo.Arguments = $"-c \"{command}\"";
                 }
             }
