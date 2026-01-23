@@ -11,6 +11,7 @@ namespace Rot.Services;
 public class TaskExecutor
 {
     private readonly Dictionary<string, TaskDefinition> _tasks;
+    private readonly Dictionary<string, string[]> _aliases;
     private readonly Dictionary<string, string> _variables;
     private readonly Dictionary<string, string> _profileEnv;
     private readonly HashSet<string> _executingTasks = new();
@@ -26,6 +27,7 @@ public class TaskExecutor
 
     public TaskExecutor(
         Dictionary<string, TaskDefinition> tasks,
+        Dictionary<string, string[]>? aliases = null,
         Dictionary<string, string>? variables = null,
         Dictionary<string, string>? profileEnv = null,
         bool allowConcurrency = false,
@@ -35,6 +37,7 @@ public class TaskExecutor
         PluginLoader? pluginLoader = null)
     {
         _tasks = tasks;
+        _aliases = aliases ?? new Dictionary<string, string[]>();
         _variables = variables ?? new Dictionary<string, string>();
         _profileEnv = profileEnv ?? new Dictionary<string, string>();
         _allowConcurrency = allowConcurrency;
@@ -84,6 +87,7 @@ public class TaskExecutor
         }
 
         var tasks = config?.Tasks ?? new Dictionary<string, TaskDefinition>();
+        var aliases = config?.Aliases ?? new Dictionary<string, string[]>();
         var variables = new Dictionary<string, string>(config?.Variables ?? new Dictionary<string, string>());
         var profileEnv = new Dictionary<string, string>();
 
@@ -140,189 +144,16 @@ public class TaskExecutor
         var pluginLoader = new PluginLoader(logger ?? NullLogger.Instance);
         // Note: Plugin names would come from config if we add plugins array to TasksConfig
 
-        return new TaskExecutor(tasks, variables, profileEnv, allowConcurrency, dryRun, noCache, logger, pluginLoader);
+        return new TaskExecutor(tasks, aliases, variables, profileEnv, allowConcurrency, dryRun, noCache, logger, pluginLoader);
     }
 
+    /// <summary>
+    /// Executes a task and returns its exit code.
+    /// </summary>
     public async Task<int> ExecuteTaskAsync(string taskName)
     {
-        _logger.Debug("Starting execution of task '{TaskName}'", taskName);
-
-        if (!_tasks.ContainsKey(taskName))
-        {
-            _logger.Error("Task '{TaskName}' not found", taskName);
-            PrintTaskNotFoundError(taskName);
-            return 1;
-        }
-
-        // Check if already completed in this session (for caching within a run)
-        await _executionSemaphore.WaitAsync();
-        try
-        {
-            if (_completedTasks.Contains(taskName))
-            {
-                _logger.Debug("Task '{TaskName}' already completed in this session", taskName);
-                return 0;
-            }
-
-            if (_executingTasks.Contains(taskName))
-            {
-                _logger.Error("Circular dependency detected for task '{TaskName}'", taskName);
-                Console.WriteLine($"Circular dependency detected for task '{taskName}'.");
-                return 1;
-            }
-            _executingTasks.Add(taskName);
-        }
-        finally
-        {
-            _executionSemaphore.Release();
-        }
-
-        var task = _tasks[taskName];
-
-        // Check conditions before executing
-        if (!_conditionEvaluator.Evaluate(task.Condition, taskName))
-        {
-            var taskLabel = GetColoredTaskLabel(taskName);
-            Console.WriteLine($"{taskLabel} Skipped (condition not met)");
-            await MarkTaskComplete(taskName);
-            return 0;
-        }
-
-        // Execute dependencies
-        if (_allowConcurrency && task.AllowConcurrent && task.DependsOn.Length > 0)
-        {
-            _logger.Debug("Executing {Count} dependencies concurrently for task '{TaskName}'", task.DependsOn.Length, taskName);
-            var dependencyTasks = task.DependsOn.Select(ExecuteTaskAsync);
-            var dependencyResults = await Task.WhenAll(dependencyTasks);
-
-            var failedDependency = dependencyResults.FirstOrDefault(r => r != 0);
-            if (failedDependency != 0)
-            {
-                await RemoveFromExecuting(taskName);
-                _logger.Error("One or more dependencies failed for task '{TaskName}'", taskName);
-                Console.WriteLine($"One or more dependencies failed for task '{taskName}'.");
-                return failedDependency;
-            }
-        }
-        else
-        {
-            foreach (var dependency in task.DependsOn)
-            {
-                _logger.Debug("Executing dependency '{Dependency}' for task '{TaskName}'", dependency, taskName);
-                var dependencyResult = await ExecuteTaskAsync(dependency);
-                if (dependencyResult != 0)
-                {
-                    await RemoveFromExecuting(taskName);
-                    _logger.Error("Dependency '{Dependency}' failed for task '{TaskName}'", dependency, taskName);
-                    Console.WriteLine($"Dependency '{dependency}' failed for task '{taskName}'.");
-                    return dependencyResult;
-                }
-            }
-        }
-
-        try
-        {
-            var taskLabel = GetColoredTaskLabel(taskName);
-
-            // Execute pre-tasks (hooks)
-            if (task.PreTasks.Length > 0)
-            {
-                _logger.Debug("Executing {Count} pre-tasks for '{TaskName}'", task.PreTasks.Length, taskName);
-                foreach (var preTask in task.PreTasks)
-                {
-                    var preResult = await ExecuteTaskAsync(preTask);
-                    if (preResult != 0)
-                    {
-                        _logger.Error("Pre-task '{PreTask}' failed for task '{TaskName}'", preTask, taskName);
-                        Console.WriteLine($"{taskLabel} Pre-task '{preTask}' failed.");
-                        return preResult;
-                    }
-                }
-            }
-
-            if (_dryRun)
-            {
-                PrintDryRunInfo(task, taskName, taskLabel);
-                return 0;
-            }
-
-            // Check cache (unless disabled)
-            if (!_noCache && task.Cache != null && _cacheManager.IsCacheValid(taskName, task.Cache))
-            {
-                Console.WriteLine($"{taskLabel} Skipped (cached)");
-                await MarkTaskComplete(taskName);
-
-                // Still run post-tasks even when cached
-                if (task.PostTasks.Length > 0)
-                {
-                    return await ExecutePostTasks(task, taskName, taskLabel);
-                }
-                return 0;
-            }
-
-            _logger.Info("Executing task '{TaskName}': {Command}", taskName, task.Command);
-            Console.WriteLine($"{taskLabel} Executing task...");
-
-            var stopwatch = Stopwatch.StartNew();
-            var result = await RunCommandAsync(task, taskName);
-            stopwatch.Stop();
-
-            if (result == 0)
-            {
-                _logger.Info("Task '{TaskName}' completed successfully in {Duration}ms", taskName, stopwatch.ElapsedMilliseconds);
-                Console.WriteLine($"{taskLabel} Task completed successfully.");
-
-                // Save cache on success
-                if (task.Cache != null)
-                {
-                    _cacheManager.SaveCache(taskName, task.Cache);
-                }
-
-                // Execute post-tasks (hooks) on success
-                if (task.PostTasks.Length > 0)
-                {
-                    var postResult = await ExecutePostTasks(task, taskName, taskLabel);
-                    if (postResult != 0)
-                    {
-                        return postResult;
-                    }
-                }
-
-                await MarkTaskComplete(taskName);
-            }
-            else if (result == -1)
-            {
-                _logger.Error("Task '{TaskName}' timed out after {Timeout} seconds", taskName, task.Timeout);
-                Console.WriteLine($"{taskLabel} Task timed out after {task.Timeout} seconds.");
-            }
-            else
-            {
-                _logger.Error("Task '{TaskName}' failed with exit code {ExitCode}", taskName, result);
-                Console.WriteLine($"{taskLabel} Task failed with exit code {result}.");
-            }
-
-            return result;
-        }
-        finally
-        {
-            await RemoveFromExecuting(taskName);
-        }
-    }
-
-    private async Task<int> ExecutePostTasks(TaskDefinition task, string taskName, string taskLabel)
-    {
-        _logger.Debug("Executing {Count} post-tasks for '{TaskName}'", task.PostTasks.Length, taskName);
-        foreach (var postTask in task.PostTasks)
-        {
-            var postResult = await ExecuteTaskAsync(postTask);
-            if (postResult != 0)
-            {
-                _logger.Error("Post-task '{PostTask}' failed for task '{TaskName}'", postTask, taskName);
-                Console.WriteLine($"{taskLabel} Post-task '{postTask}' failed.");
-                return postResult;
-            }
-        }
-        return 0;
+        var result = await ExecuteTaskWithResultAsync(taskName);
+        return result.ExitCode;
     }
 
     private async Task MarkTaskComplete(string taskName)
@@ -551,9 +382,48 @@ public class TaskExecutor
         return _tasks.ContainsKey(taskName);
     }
 
+    public bool HasAlias(string aliasName)
+    {
+        return _aliases.ContainsKey(aliasName);
+    }
+
+    public bool HasTaskOrAlias(string name)
+    {
+        return _tasks.ContainsKey(name) || _aliases.ContainsKey(name);
+    }
+
+    public string[] GetAliasTasks(string aliasName)
+    {
+        return _aliases.TryGetValue(aliasName, out var tasks) ? tasks : Array.Empty<string>();
+    }
+
+    public async Task<int> ExecuteAliasAsync(string aliasName)
+    {
+        if (!_aliases.TryGetValue(aliasName, out var tasks))
+        {
+            _logger.Error("Alias '{AliasName}' not found", aliasName);
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"Alias '{aliasName}' not found.");
+            Console.ResetColor();
+            return 1;
+        }
+
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine($"Running alias '{aliasName}': {string.Join(" → ", tasks)}");
+        Console.ResetColor();
+        Console.WriteLine();
+
+        return await ExecuteTasksAsync(tasks);
+    }
+
     public IEnumerable<string> GetTaskNames()
     {
         return _tasks.Keys;
+    }
+
+    public IEnumerable<string> GetAliasNames()
+    {
+        return _aliases.Keys;
     }
 
     private void PrintTaskNotFoundError(string taskName)
@@ -664,6 +534,20 @@ public class TaskExecutor
                 Console.Write($"  {group.Key}");
                 Console.ResetColor();
                 Console.WriteLine($" ({group.Count()})");
+            }
+        }
+
+        // Show aliases
+        if (_aliases.Count > 0)
+        {
+            Console.WriteLine();
+            Console.WriteLine("Aliases:");
+            foreach (var alias in _aliases.OrderBy(a => a.Key))
+            {
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.Write($"  {alias.Key,-20}");
+                Console.ResetColor();
+                Console.WriteLine($"→ {string.Join(", ", alias.Value)}");
             }
         }
 
@@ -802,13 +686,211 @@ public class TaskExecutor
             .Select(t => t.Key);
     }
 
+    public void PrintGraph(string? taskName = null)
+    {
+        Console.WriteLine();
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine("Task Dependency Graph");
+        Console.ResetColor();
+        Console.WriteLine(new string('═', 40));
+        Console.WriteLine();
+
+        if (!string.IsNullOrEmpty(taskName))
+        {
+            // Show graph for specific task
+            if (!_tasks.ContainsKey(taskName))
+            {
+                PrintTaskNotFoundError(taskName);
+                return;
+            }
+
+            PrintTaskTree(taskName, "", true, new HashSet<string>());
+        }
+        else
+        {
+            // Show graph for all root tasks (tasks with no dependents)
+            var allDependencies = _tasks.Values
+                .SelectMany(t => t.DependsOn.Concat(t.PreTasks).Concat(t.PostTasks))
+                .ToHashSet();
+
+            var rootTasks = _tasks.Keys
+                .Where(t => !allDependencies.Contains(t))
+                .OrderBy(t => t)
+                .ToList();
+
+            if (rootTasks.Count == 0)
+            {
+                // If everything has dependents, just list all tasks
+                rootTasks = _tasks.Keys.OrderBy(t => t).ToList();
+            }
+
+            foreach (var root in rootTasks)
+            {
+                PrintTaskTree(root, "", true, new HashSet<string>());
+                Console.WriteLine();
+            }
+        }
+
+        // Print aliases graph if any
+        if (_aliases.Count > 0)
+        {
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine("Aliases");
+            Console.ResetColor();
+            Console.WriteLine(new string('─', 40));
+            Console.WriteLine();
+
+            foreach (var alias in _aliases.OrderBy(a => a.Key))
+            {
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.Write($"  {alias.Key}");
+                Console.ResetColor();
+                Console.WriteLine();
+
+                for (int i = 0; i < alias.Value.Length; i++)
+                {
+                    var isLast = i == alias.Value.Length - 1;
+                    var prefix = isLast ? "  └── " : "  ├── ";
+                    Console.ForegroundColor = ConsoleColor.DarkGray;
+                    Console.Write(prefix);
+                    Console.ResetColor();
+                    Console.WriteLine(alias.Value[i]);
+                }
+                Console.WriteLine();
+            }
+        }
+    }
+
+    private void PrintTaskTree(string taskName, string indent, bool isLast, HashSet<string> visited)
+    {
+        var branch = isLast ? "└── " : "├── ";
+        var nextIndent = indent + (isLast ? "    " : "│   ");
+
+        // Print the current task
+        Console.ForegroundColor = ConsoleColor.DarkGray;
+        Console.Write(indent);
+        Console.Write(branch);
+        Console.ResetColor();
+
+        // Color based on task state
+        if (visited.Contains(taskName))
+        {
+            Console.ForegroundColor = ConsoleColor.DarkYellow;
+            Console.WriteLine($"{taskName} (circular ref)");
+            Console.ResetColor();
+            return;
+        }
+
+        if (!_tasks.ContainsKey(taskName))
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"{taskName} (not found)");
+            Console.ResetColor();
+            return;
+        }
+
+        var task = _tasks[taskName];
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.Write(taskName);
+        Console.ResetColor();
+
+        // Show task type and other info
+        Console.ForegroundColor = ConsoleColor.DarkGray;
+        if (!string.IsNullOrEmpty(task.Label))
+        {
+            Console.Write($" - {task.Label}");
+        }
+        Console.WriteLine();
+        Console.ResetColor();
+
+        visited.Add(taskName);
+
+        // Get all dependencies (dependsOn + preTasks)
+        var allDeps = new List<string>();
+
+        if (task.PreTasks.Length > 0)
+        {
+            foreach (var pre in task.PreTasks)
+            {
+                allDeps.Add($"[pre] {pre}");
+            }
+        }
+
+        allDeps.AddRange(task.DependsOn);
+
+        if (task.PostTasks.Length > 0)
+        {
+            foreach (var post in task.PostTasks)
+            {
+                allDeps.Add($"[post] {post}");
+            }
+        }
+
+        // Print dependencies
+        for (int i = 0; i < allDeps.Count; i++)
+        {
+            var dep = allDeps[i];
+            var depIsLast = i == allDeps.Count - 1;
+
+            if (dep.StartsWith("[pre] ") || dep.StartsWith("[post] "))
+            {
+                var hookType = dep.StartsWith("[pre] ") ? "pre" : "post";
+                var actualTask = dep.Substring(hookType.Length + 3);
+
+                Console.ForegroundColor = ConsoleColor.DarkGray;
+                Console.Write(nextIndent);
+                Console.Write(depIsLast ? "└── " : "├── ");
+                Console.ForegroundColor = ConsoleColor.Magenta;
+                Console.Write($"[{hookType}] ");
+                Console.ResetColor();
+
+                if (!visited.Contains(actualTask) && _tasks.ContainsKey(actualTask))
+                {
+                    var childVisited = new HashSet<string>(visited);
+                    Console.WriteLine(actualTask);
+                    // Don't expand hooks further to keep output cleaner
+                }
+                else if (visited.Contains(actualTask))
+                {
+                    Console.ForegroundColor = ConsoleColor.DarkYellow;
+                    Console.WriteLine($"{actualTask} (circular ref)");
+                    Console.ResetColor();
+                }
+                else
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"{actualTask} (not found)");
+                    Console.ResetColor();
+                }
+            }
+            else
+            {
+                PrintTaskTree(dep, nextIndent, depIsLast, new HashSet<string>(visited));
+            }
+        }
+    }
+
     public async Task<int> ExecuteTasksAsync(IEnumerable<string> taskNames)
     {
+        var result = await ExecuteTasksWithResultAsync(taskNames);
+        return result.ExitCode;
+    }
+
+    /// <summary>
+    /// Executes multiple tasks and returns detailed results.
+    /// </summary>
+    public async Task<TasksResult> ExecuteTasksWithResultAsync(IEnumerable<string> taskNames)
+    {
         var names = taskNames.ToList();
+        var results = new List<TaskResult>();
+
         if (names.Count == 0)
         {
             Console.WriteLine("No tasks matched the criteria.");
-            return 1;
+            return new TasksResult
+            {
+                Results = new[] { TaskResult.Failed("", 1, "No tasks matched the criteria") }
+            };
         }
 
         Console.WriteLine($"Running {names.Count} task(s): {string.Join(", ", names)}");
@@ -816,14 +898,199 @@ public class TaskExecutor
 
         foreach (var taskName in names)
         {
-            var result = await ExecuteTaskAsync(taskName);
-            if (result != 0)
+            var result = await ExecuteTaskWithResultAsync(taskName);
+            results.Add(result);
+
+            if (!result.Success)
             {
-                return result;
+                return new TasksResult { Results = results };
             }
         }
 
-        return 0;
+        return new TasksResult { Results = results };
+    }
+
+    /// <summary>
+    /// Executes a task and returns detailed result information.
+    /// </summary>
+    public async Task<TaskResult> ExecuteTaskWithResultAsync(string taskName)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        _logger.Debug("Starting execution of task '{TaskName}'", taskName);
+
+        if (!_tasks.ContainsKey(taskName))
+        {
+            _logger.Error("Task '{TaskName}' not found", taskName);
+            PrintTaskNotFoundError(taskName);
+            return TaskResult.NotFound(taskName);
+        }
+
+        // Check if already completed in this session
+        await _executionSemaphore.WaitAsync();
+        try
+        {
+            if (_completedTasks.Contains(taskName))
+            {
+                _logger.Debug("Task '{TaskName}' already completed in this session", taskName);
+                return TaskResult.SkippedResult(taskName, "Already completed in this session");
+            }
+
+            if (_executingTasks.Contains(taskName))
+            {
+                _logger.Error("Circular dependency detected for task '{TaskName}'", taskName);
+                Console.WriteLine($"Circular dependency detected for task '{taskName}'.");
+                return TaskResult.CircularDependency(taskName);
+            }
+            _executingTasks.Add(taskName);
+        }
+        finally
+        {
+            _executionSemaphore.Release();
+        }
+
+        var task = _tasks[taskName];
+
+        // Check conditions before executing
+        if (!_conditionEvaluator.Evaluate(task.Condition, taskName))
+        {
+            var taskLabel = GetColoredTaskLabel(taskName);
+            Console.WriteLine($"{taskLabel} Skipped (condition not met)");
+            await MarkTaskComplete(taskName);
+            return TaskResult.SkippedResult(taskName, "Condition not met");
+        }
+
+        // Execute dependencies
+        if (_allowConcurrency && task.AllowConcurrent && task.DependsOn.Length > 0)
+        {
+            _logger.Debug("Executing {Count} dependencies concurrently for task '{TaskName}'", task.DependsOn.Length, taskName);
+            var dependencyTasks = task.DependsOn.Select(ExecuteTaskWithResultAsync);
+            var dependencyResults = await Task.WhenAll(dependencyTasks);
+
+            var failedDependency = dependencyResults.FirstOrDefault(r => !r.Success);
+            if (failedDependency != null)
+            {
+                await RemoveFromExecuting(taskName);
+                _logger.Error("One or more dependencies failed for task '{TaskName}'", taskName);
+                Console.WriteLine($"One or more dependencies failed for task '{taskName}'.");
+                return TaskResult.Failed(taskName, failedDependency.ExitCode, $"Dependency '{failedDependency.TaskName}' failed");
+            }
+        }
+        else
+        {
+            foreach (var dependency in task.DependsOn)
+            {
+                _logger.Debug("Executing dependency '{Dependency}' for task '{TaskName}'", dependency, taskName);
+                var dependencyResult = await ExecuteTaskWithResultAsync(dependency);
+                if (!dependencyResult.Success)
+                {
+                    await RemoveFromExecuting(taskName);
+                    _logger.Error("Dependency '{Dependency}' failed for task '{TaskName}'", dependency, taskName);
+                    Console.WriteLine($"Dependency '{dependency}' failed for task '{taskName}'.");
+                    return TaskResult.Failed(taskName, dependencyResult.ExitCode, $"Dependency '{dependency}' failed");
+                }
+            }
+        }
+
+        try
+        {
+            var taskLabel = GetColoredTaskLabel(taskName);
+
+            // Execute pre-tasks (hooks)
+            if (task.PreTasks.Length > 0)
+            {
+                _logger.Debug("Executing {Count} pre-tasks for '{TaskName}'", task.PreTasks.Length, taskName);
+                foreach (var preTask in task.PreTasks)
+                {
+                    var preResult = await ExecuteTaskWithResultAsync(preTask);
+                    if (!preResult.Success)
+                    {
+                        _logger.Error("Pre-task '{PreTask}' failed for task '{TaskName}'", preTask, taskName);
+                        Console.WriteLine($"{taskLabel} Pre-task '{preTask}' failed.");
+                        return TaskResult.Failed(taskName, preResult.ExitCode, $"Pre-task '{preTask}' failed");
+                    }
+                }
+            }
+
+            if (_dryRun)
+            {
+                PrintDryRunInfo(task, taskName, taskLabel);
+                return TaskResult.DryRunResult(taskName);
+            }
+
+            // Check cache (unless disabled)
+            if (!_noCache && task.Cache != null && _cacheManager.IsCacheValid(taskName, task.Cache))
+            {
+                Console.WriteLine($"{taskLabel} Skipped (cached)");
+                await MarkTaskComplete(taskName);
+
+                // Still run post-tasks even when cached
+                if (task.PostTasks.Length > 0)
+                {
+                    foreach (var postTask in task.PostTasks)
+                    {
+                        var postResult = await ExecuteTaskWithResultAsync(postTask);
+                        if (!postResult.Success)
+                        {
+                            return TaskResult.Failed(taskName, postResult.ExitCode, $"Post-task '{postTask}' failed");
+                        }
+                    }
+                }
+                return TaskResult.SkippedResult(taskName, "Cached");
+            }
+
+            _logger.Info("Executing task '{TaskName}': {Command}", taskName, task.Command);
+            Console.WriteLine($"{taskLabel} Executing task...");
+
+            var taskStopwatch = Stopwatch.StartNew();
+            var exitCode = await RunCommandAsync(task, taskName);
+            taskStopwatch.Stop();
+
+            if (exitCode == 0)
+            {
+                _logger.Info("Task '{TaskName}' completed successfully in {Duration}ms", taskName, taskStopwatch.ElapsedMilliseconds);
+                Console.WriteLine($"{taskLabel} Task completed successfully.");
+
+                // Save cache on success
+                if (task.Cache != null)
+                {
+                    _cacheManager.SaveCache(taskName, task.Cache);
+                }
+
+                // Execute post-tasks (hooks) on success
+                if (task.PostTasks.Length > 0)
+                {
+                    foreach (var postTask in task.PostTasks)
+                    {
+                        var postResult = await ExecuteTaskWithResultAsync(postTask);
+                        if (!postResult.Success)
+                        {
+                            _logger.Error("Post-task '{PostTask}' failed for task '{TaskName}'", postTask, taskName);
+                            Console.WriteLine($"{taskLabel} Post-task '{postTask}' failed.");
+                            return TaskResult.Failed(taskName, postResult.ExitCode, $"Post-task '{postTask}' failed");
+                        }
+                    }
+                }
+
+                await MarkTaskComplete(taskName);
+                return TaskResult.Succeeded(taskName, taskStopwatch.Elapsed);
+            }
+            else if (exitCode == -1)
+            {
+                _logger.Error("Task '{TaskName}' timed out after {Timeout} seconds", taskName, task.Timeout);
+                Console.WriteLine($"{taskLabel} Task timed out after {task.Timeout} seconds.");
+                return TaskResult.TimedOut(taskName, task.Timeout ?? 0);
+            }
+            else
+            {
+                _logger.Error("Task '{TaskName}' failed with exit code {ExitCode}", taskName, exitCode);
+                Console.WriteLine($"{taskLabel} Task failed with exit code {exitCode}.");
+                return TaskResult.Failed(taskName, exitCode, $"Task failed with exit code {exitCode}", taskStopwatch.Elapsed);
+            }
+        }
+        finally
+        {
+            await RemoveFromExecuting(taskName);
+        }
     }
 
     private string SubstituteVariables(string input)
