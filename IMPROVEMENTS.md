@@ -657,19 +657,20 @@ public class AuditLogger
 
 ## Implementation Priority Summary
 
-### Phase 1 (Core Improvements)
-1. Task timeout support
-2. Dry run mode
-3. Unit tests
-4. Structured logging
-5. Configuration validation
+### Phase 1 (Core Improvements) ✅ COMPLETED
+1. ✅ Task timeout support
+2. ✅ Dry run mode
+3. ✅ Unit tests
+4. ✅ Structured logging
+5. ✅ Configuration validation
 
-### Phase 2 (Enhanced Features)
-1. Task groups and batch execution
-2. Variable substitution
-3. Watch mode
-4. `--verbose`/`--quiet` flags
-5. Better `list` output
+### Phase 2 (Enhanced Features) ✅ COMPLETED
+1. ✅ Task groups and batch execution (`--group`, `--pattern`, `--tag` options)
+2. ✅ Variable substitution (`${var}` and `${env:VAR}` syntax)
+3. ✅ Watch mode (`rot watch` command with file monitoring)
+4. ✅ `--verbose`/`--quiet` flags
+5. ✅ Better `list` output (groups, types, dependencies)
+6. ✅ `describe` command for detailed task information
 
 ### Phase 3 (Advanced Features)
 1. Conditional execution

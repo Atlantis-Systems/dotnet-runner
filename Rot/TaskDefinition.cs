@@ -13,5 +13,7 @@ public class TaskDefinition
     public string[] DependsOn { get; set; } = Array.Empty<string>();
     public bool AllowConcurrent { get; set; } = false;
     public int? Timeout { get; set; }
+    public string Group { get; set; } = string.Empty;
+    public string[] Tags { get; set; } = Array.Empty<string>();
 }
 
