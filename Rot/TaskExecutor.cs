@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Rot.Logging;
 using Rot.Models;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
@@ -12,14 +13,26 @@ public class TaskExecutor
     private readonly HashSet<string> _executingTasks = new();
     private readonly SemaphoreSlim _executionSemaphore = new(1, 1);
     private readonly bool _allowConcurrency;
+    private readonly bool _dryRun;
+    private readonly ITaskLogger _logger;
 
-    public TaskExecutor(Dictionary<string, TaskDefinition> tasks, bool allowConcurrency = false)
+    public TaskExecutor(
+        Dictionary<string, TaskDefinition> tasks,
+        bool allowConcurrency = false,
+        bool dryRun = false,
+        ITaskLogger? logger = null)
     {
         _tasks = tasks;
         _allowConcurrency = allowConcurrency;
+        _dryRun = dryRun;
+        _logger = logger ?? NullLogger.Instance;
     }
 
-    public static TaskExecutor LoadFromFile(string filePath, bool allowConcurrency = false)
+    public static TaskExecutor LoadFromFile(
+        string filePath,
+        bool allowConcurrency = false,
+        bool dryRun = false,
+        ITaskLogger? logger = null)
     {
         if (!File.Exists(filePath))
             throw new FileNotFoundException($"Tasks file not found: {filePath}");
@@ -50,14 +63,42 @@ public class TaskExecutor
                 throw new NotSupportedException($"File extension '{extension}' is not supported. Use .json, .yaml, or .yml files.");
         }
 
-        return new TaskExecutor(config?.Tasks ?? new Dictionary<string, TaskDefinition>(), allowConcurrency);
+        var tasks = config?.Tasks ?? new Dictionary<string, TaskDefinition>();
+
+        // Validate configuration
+        var validator = new TaskValidator();
+        var validationResult = validator.ValidateAll(tasks);
+
+        foreach (var warning in validationResult.Warnings)
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine($"Warning: {warning}");
+            Console.ResetColor();
+        }
+
+        if (!validationResult.IsValid)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine("Configuration validation failed:");
+            foreach (var error in validationResult.Errors)
+            {
+                Console.WriteLine($"  - {error}");
+            }
+            Console.ResetColor();
+            throw new InvalidOperationException("Task configuration is invalid.");
+        }
+
+        return new TaskExecutor(tasks, allowConcurrency, dryRun, logger);
     }
 
     public async Task<int> ExecuteTaskAsync(string taskName)
     {
+        _logger.Debug("Starting execution of task '{TaskName}'", taskName);
+
         if (!_tasks.ContainsKey(taskName))
         {
-            Console.WriteLine($"Task '{taskName}' not found.");
+            _logger.Error("Task '{TaskName}' not found", taskName);
+            PrintTaskNotFoundError(taskName);
             return 1;
         }
 
@@ -66,6 +107,7 @@ public class TaskExecutor
         {
             if (_executingTasks.Contains(taskName))
             {
+                _logger.Error("Circular dependency detected for task '{TaskName}'", taskName);
                 Console.WriteLine($"Circular dependency detected for task '{taskName}'.");
                 return 1;
             }
@@ -77,17 +119,19 @@ public class TaskExecutor
         }
 
         var task = _tasks[taskName];
-        
+
         if (_allowConcurrency && task.AllowConcurrent && task.DependsOn.Length > 0)
         {
+            _logger.Debug("Executing {Count} dependencies concurrently for task '{TaskName}'", task.DependsOn.Length, taskName);
             var dependencyTasks = task.DependsOn.Select(ExecuteTaskAsync);
             var dependencyResults = await Task.WhenAll(dependencyTasks);
-            
+
             var failedDependency = dependencyResults.FirstOrDefault(r => r != 0);
             if (failedDependency != 0)
             {
                 await _executionSemaphore.WaitAsync();
                 try { _executingTasks.Remove(taskName); } finally { _executionSemaphore.Release(); }
+                _logger.Error("One or more dependencies failed for task '{TaskName}'", taskName);
                 Console.WriteLine($"One or more dependencies failed for task '{taskName}'.");
                 return failedDependency;
             }
@@ -96,11 +140,13 @@ public class TaskExecutor
         {
             foreach (var dependency in task.DependsOn)
             {
+                _logger.Debug("Executing dependency '{Dependency}' for task '{TaskName}'", dependency, taskName);
                 var dependencyResult = await ExecuteTaskAsync(dependency);
                 if (dependencyResult != 0)
                 {
                     await _executionSemaphore.WaitAsync();
                     try { _executingTasks.Remove(taskName); } finally { _executionSemaphore.Release(); }
+                    _logger.Error("Dependency '{Dependency}' failed for task '{TaskName}'", dependency, taskName);
                     Console.WriteLine($"Dependency '{dependency}' failed for task '{taskName}'.");
                     return dependencyResult;
                 }
@@ -110,16 +156,33 @@ public class TaskExecutor
         try
         {
             var taskLabel = GetColoredTaskLabel(taskName);
+
+            if (_dryRun)
+            {
+                PrintDryRunInfo(task, taskName, taskLabel);
+                return 0;
+            }
+
+            _logger.Info("Executing task '{TaskName}': {Command}", taskName, task.Command);
             Console.WriteLine($"{taskLabel} Executing task...");
-            
+
+            var stopwatch = Stopwatch.StartNew();
             var result = await RunCommandAsync(task, taskName);
-            
+            stopwatch.Stop();
+
             if (result == 0)
             {
+                _logger.Info("Task '{TaskName}' completed successfully in {Duration}ms", taskName, stopwatch.ElapsedMilliseconds);
                 Console.WriteLine($"{taskLabel} Task completed successfully.");
+            }
+            else if (result == -1)
+            {
+                _logger.Error("Task '{TaskName}' timed out after {Timeout} seconds", taskName, task.Timeout);
+                Console.WriteLine($"{taskLabel} Task timed out after {task.Timeout} seconds.");
             }
             else
             {
+                _logger.Error("Task '{TaskName}' failed with exit code {ExitCode}", taskName, result);
                 Console.WriteLine($"{taskLabel} Task failed with exit code {result}.");
             }
 
@@ -231,13 +294,124 @@ public class TaskExecutor
             process.BeginErrorReadLine();
         }
 
+        if (task.Timeout.HasValue && task.Timeout.Value > 0)
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(task.Timeout.Value));
+            try
+            {
+                await process.WaitForExitAsync(cts.Token);
+                return process.ExitCode;
+            }
+            catch (OperationCanceledException)
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch
+                {
+                    // Process may have already exited
+                }
+                return -1;
+            }
+        }
+
         await process.WaitForExitAsync();
         return process.ExitCode;
+    }
+
+    private void PrintDryRunInfo(TaskDefinition task, string taskName, string taskLabel)
+    {
+        Console.WriteLine($"{taskLabel} [DRY RUN] Would execute:");
+        Console.WriteLine($"  Command: {task.Command}");
+        if (task.Args.Length > 0)
+        {
+            Console.WriteLine($"  Arguments: {string.Join(" ", task.Args)}");
+        }
+        if (!string.IsNullOrEmpty(task.Cwd))
+        {
+            Console.WriteLine($"  Working directory: {task.Cwd}");
+        }
+        if (task.Env.Count > 0)
+        {
+            Console.WriteLine($"  Environment:");
+            foreach (var env in task.Env)
+            {
+                Console.WriteLine($"    {env.Key}={env.Value}");
+            }
+        }
+        if (task.Timeout.HasValue)
+        {
+            Console.WriteLine($"  Timeout: {task.Timeout.Value} seconds");
+        }
+        if (task.DependsOn.Length > 0)
+        {
+            Console.WriteLine($"  Dependencies: {string.Join(", ", task.DependsOn)}");
+        }
     }
 
     public bool HasTask(string taskName)
     {
         return _tasks.ContainsKey(taskName);
+    }
+
+    public IEnumerable<string> GetTaskNames()
+    {
+        return _tasks.Keys;
+    }
+
+    private void PrintTaskNotFoundError(string taskName)
+    {
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.WriteLine($"Task '{taskName}' not found.");
+        Console.ResetColor();
+
+        var availableTasks = _tasks.Keys.ToList();
+        if (availableTasks.Count > 0)
+        {
+            Console.WriteLine($"Available tasks: {string.Join(", ", availableTasks)}");
+
+            // Suggest similar task names
+            var similar = FindSimilarTasks(taskName, availableTasks);
+            if (similar.Count > 0)
+            {
+                Console.WriteLine($"Did you mean: {string.Join(", ", similar)}?");
+            }
+        }
+    }
+
+    private List<string> FindSimilarTasks(string input, List<string> taskNames)
+    {
+        return taskNames
+            .Select(name => (name, distance: LevenshteinDistance(input.ToLower(), name.ToLower())))
+            .Where(x => x.distance <= 3)
+            .OrderBy(x => x.distance)
+            .Take(3)
+            .Select(x => x.name)
+            .ToList();
+    }
+
+    private static int LevenshteinDistance(string s1, string s2)
+    {
+        var m = s1.Length;
+        var n = s2.Length;
+        var dp = new int[m + 1, n + 1];
+
+        for (int i = 0; i <= m; i++) dp[i, 0] = i;
+        for (int j = 0; j <= n; j++) dp[0, j] = j;
+
+        for (int i = 1; i <= m; i++)
+        {
+            for (int j = 1; j <= n; j++)
+            {
+                var cost = s1[i - 1] == s2[j - 1] ? 0 : 1;
+                dp[i, j] = Math.Min(
+                    Math.Min(dp[i - 1, j] + 1, dp[i, j - 1] + 1),
+                    dp[i - 1, j - 1] + cost);
+            }
+        }
+
+        return dp[m, n];
     }
 
     public void ListTasks()
