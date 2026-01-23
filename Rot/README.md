@@ -28,8 +28,31 @@ rotlist --file custom-tasks.json
 
 ### Run a task
 ```bash
-rotrun build
-rotrun test --file custom-tasks.json
+rot run build
+rot run test --file custom-tasks.json
+
+# Run with options
+rot run build --dry-run          # Preview without executing
+rot run build --verbose          # Show detailed output
+rot run build --quiet            # Only show errors
+```
+
+### Run tasks by group, pattern, or tag
+```bash
+rot run --group build            # Run all tasks in "build" group
+rot run --pattern "test-*"       # Run tasks matching pattern
+rot run --tag ci                 # Run all tasks tagged with "ci"
+```
+
+### Describe a task
+```bash
+rot describe build               # Show detailed task information
+```
+
+### Watch mode
+```bash
+rot watch build --glob "src/**/*.cs"    # Re-run on file changes
+rot watch test --glob "**/*.cs" --debounce 500
 ```
 
 ## Task Configuration
@@ -74,6 +97,9 @@ Create a `tasks.json` file in your project root:
 - **echo**: Show command output (default: true)
 - **dependsOn**: Array of task names that must run before this task
 - **allowConcurrent**: Allow dependencies to run in parallel when using --concurrent flag (default: false)
+- **timeout**: Timeout in seconds before the task is killed
+- **group**: Group name for batch execution (e.g., "build", "test")
+- **tags**: Array of tags for filtering tasks (e.g., ["ci", "dev"])
 
 ## Examples
 
@@ -164,6 +190,93 @@ deploy:
     "type": "shell",
     "command": "pwd",
     "cwd": "/tmp"
+  }
+}
+```
+
+### Variable Substitution
+
+Define variables at the top level and use them in your commands with `${varName}` syntax:
+
+```json
+{
+  "variables": {
+    "config": "Release",
+    "outputDir": "./dist"
+  },
+  "tasks": {
+    "build": {
+      "command": "dotnet build -c ${config} -o ${outputDir}"
+    }
+  }
+}
+```
+
+**YAML Example:**
+```yaml
+variables:
+  config: Release
+  outputDir: ./dist
+
+tasks:
+  build:
+    command: dotnet build -c ${config} -o ${outputDir}
+```
+
+You can also reference environment variables:
+
+```json
+{
+  "tasks": {
+    "deploy": {
+      "command": "deploy.sh --env ${env:DEPLOY_ENV} --api-key ${env:API_KEY}"
+    }
+  }
+}
+```
+
+### Task Groups and Tags
+
+Organize tasks with groups and tags for batch execution:
+
+```json
+{
+  "tasks": {
+    "build": {
+      "command": "dotnet build",
+      "group": "compile",
+      "tags": ["ci", "dev"]
+    },
+    "lint": {
+      "command": "dotnet format --verify-no-changes",
+      "group": "quality",
+      "tags": ["ci"]
+    },
+    "test-unit": {
+      "command": "dotnet test --filter Category=Unit",
+      "group": "test",
+      "tags": ["ci", "dev"]
+    }
+  }
+}
+```
+
+Run tasks by group or tag:
+```bash
+rot run --group compile      # Run all tasks in "compile" group
+rot run --tag ci             # Run all tasks tagged with "ci"
+rot run --pattern "test-*"   # Run tasks matching pattern
+```
+
+### Task Timeout
+
+Set a timeout (in seconds) to prevent runaway tasks:
+
+```json
+{
+  "long-build": {
+    "command": "npm run build",
+    "timeout": 300
   }
 }
 ```

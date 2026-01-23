@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Rot.Logging;
 using Rot.Models;
 using YamlDotNet.Serialization;
@@ -10,6 +11,7 @@ namespace Rot.Services;
 public class TaskExecutor
 {
     private readonly Dictionary<string, TaskDefinition> _tasks;
+    private readonly Dictionary<string, string> _variables;
     private readonly HashSet<string> _executingTasks = new();
     private readonly SemaphoreSlim _executionSemaphore = new(1, 1);
     private readonly bool _allowConcurrency;
@@ -18,11 +20,13 @@ public class TaskExecutor
 
     public TaskExecutor(
         Dictionary<string, TaskDefinition> tasks,
+        Dictionary<string, string>? variables = null,
         bool allowConcurrency = false,
         bool dryRun = false,
         ITaskLogger? logger = null)
     {
         _tasks = tasks;
+        _variables = variables ?? new Dictionary<string, string>();
         _allowConcurrency = allowConcurrency;
         _dryRun = dryRun;
         _logger = logger ?? NullLogger.Instance;
@@ -64,6 +68,7 @@ public class TaskExecutor
         }
 
         var tasks = config?.Tasks ?? new Dictionary<string, TaskDefinition>();
+        var variables = config?.Variables ?? new Dictionary<string, string>();
 
         // Validate configuration
         var validator = new TaskValidator();
@@ -88,7 +93,7 @@ public class TaskExecutor
             throw new InvalidOperationException("Task configuration is invalid.");
         }
 
-        return new TaskExecutor(tasks, allowConcurrency, dryRun, logger);
+        return new TaskExecutor(tasks, variables, allowConcurrency, dryRun, logger);
     }
 
     public async Task<int> ExecuteTaskAsync(string taskName)
@@ -230,31 +235,35 @@ public class TaskExecutor
     {
         var processInfo = new ProcessStartInfo();
 
+        // Apply variable substitution to command and args
+        var command = SubstituteVariables(task.Command);
+        var args = task.Args.Select(SubstituteVariables).ToArray();
+
         if (task.Type == "shell" || string.IsNullOrEmpty(task.Type))
         {
-            if (task.Args.Length > 0)
+            if (args.Length > 0)
             {
-                processInfo.FileName = task.Command;
-                processInfo.Arguments = string.Join(" ", task.Args);
+                processInfo.FileName = command;
+                processInfo.Arguments = string.Join(" ", args);
             }
             else
             {
                 if (OperatingSystem.IsWindows())
                 {
                     processInfo.FileName = task.Shell ?? "cmd.exe";
-                    processInfo.Arguments = $"/c \"{task.Command}\"";
+                    processInfo.Arguments = $"/c \"{command}\"";
                 }
                 else
                 {
                     processInfo.FileName = task.Shell ?? "/bin/bash";
-                    processInfo.Arguments = $"-c \"{task.Command}\"";
+                    processInfo.Arguments = $"-c \"{command}\"";
                 }
             }
         }
         else if (task.Type == "process")
         {
-            processInfo.FileName = task.Command;
-            processInfo.Arguments = string.Join(" ", task.Args);
+            processInfo.FileName = command;
+            processInfo.Arguments = string.Join(" ", args);
         }
         else
         {
@@ -264,12 +273,12 @@ public class TaskExecutor
 
         if (!string.IsNullOrEmpty(task.Cwd))
         {
-            processInfo.WorkingDirectory = task.Cwd;
+            processInfo.WorkingDirectory = SubstituteVariables(task.Cwd);
         }
 
         foreach (var env in task.Env)
         {
-            processInfo.Environment[env.Key] = env.Value;
+            processInfo.Environment[env.Key] = SubstituteVariables(env.Value);
         }
 
         processInfo.UseShellExecute = false;
@@ -414,14 +423,215 @@ public class TaskExecutor
         return dp[m, n];
     }
 
-    public void ListTasks()
+    public void ListTasks(bool detailed = false)
     {
-        Console.WriteLine("Available tasks:");
-        foreach (var kvp in _tasks)
+        Console.WriteLine("\nAvailable tasks:");
+        Console.WriteLine(new string('-', 60));
+
+        foreach (var kvp in _tasks.OrderBy(t => t.Value.Group).ThenBy(t => t.Key))
         {
             var task = kvp.Value;
             var label = !string.IsNullOrEmpty(task.Label) ? task.Label : kvp.Key;
-            Console.WriteLine($"  {kvp.Key}: {label}");
+
+            // Format: taskName  description  [type]  depends: ...
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.Write($"  {kvp.Key,-20}");
+            Console.ResetColor();
+
+            Console.Write($"{label,-30}");
+
+            Console.ForegroundColor = ConsoleColor.DarkGray;
+            Console.Write($"[{task.Type}]");
+            Console.ResetColor();
+
+            if (task.DependsOn.Length > 0)
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.Write($"  depends: {string.Join(", ", task.DependsOn)}");
+                Console.ResetColor();
+            }
+
+            Console.WriteLine();
+
+            if (detailed && !string.IsNullOrEmpty(task.Group))
+            {
+                Console.ForegroundColor = ConsoleColor.DarkGray;
+                Console.WriteLine($"    Group: {task.Group}");
+                Console.ResetColor();
+            }
         }
+
+        // Show group summary
+        var groups = _tasks
+            .Where(t => !string.IsNullOrEmpty(t.Value.Group))
+            .GroupBy(t => t.Value.Group)
+            .ToList();
+
+        if (groups.Count > 0)
+        {
+            Console.WriteLine();
+            Console.WriteLine("Groups:");
+            foreach (var group in groups.OrderBy(g => g.Key))
+            {
+                Console.ForegroundColor = ConsoleColor.Magenta;
+                Console.Write($"  {group.Key}");
+                Console.ResetColor();
+                Console.WriteLine($" ({group.Count()})");
+            }
+        }
+
+        Console.WriteLine();
+    }
+
+    public void DescribeTask(string taskName)
+    {
+        if (!_tasks.TryGetValue(taskName, out var task))
+        {
+            PrintTaskNotFoundError(taskName);
+            return;
+        }
+
+        Console.WriteLine();
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine($"Task: {taskName}");
+        Console.ResetColor();
+        Console.WriteLine(new string('-', 40));
+
+        if (!string.IsNullOrEmpty(task.Label))
+            Console.WriteLine($"  Label:    {task.Label}");
+
+        Console.WriteLine($"  Type:     {task.Type}");
+        Console.WriteLine($"  Command:  {task.Command}");
+
+        if (task.Args.Length > 0)
+            Console.WriteLine($"  Args:     {string.Join(" ", task.Args)}");
+
+        if (!string.IsNullOrEmpty(task.Cwd))
+            Console.WriteLine($"  Cwd:      {task.Cwd}");
+
+        if (!string.IsNullOrEmpty(task.Group))
+            Console.WriteLine($"  Group:    {task.Group}");
+
+        if (task.Tags.Length > 0)
+            Console.WriteLine($"  Tags:     {string.Join(", ", task.Tags)}");
+
+        if (task.Timeout.HasValue)
+            Console.WriteLine($"  Timeout:  {task.Timeout.Value} seconds");
+
+        Console.WriteLine($"  Echo:     {task.Echo}");
+
+        if (task.Env.Count > 0)
+        {
+            Console.WriteLine("  Env:");
+            foreach (var env in task.Env)
+            {
+                Console.WriteLine($"    - {env.Key}={env.Value}");
+            }
+        }
+
+        if (task.DependsOn.Length > 0)
+        {
+            Console.WriteLine($"  Dependencies: {string.Join(", ", task.DependsOn)}");
+        }
+
+        // Find tasks that depend on this task
+        var dependents = _tasks
+            .Where(t => t.Value.DependsOn.Contains(taskName))
+            .Select(t => t.Key)
+            .ToList();
+
+        if (dependents.Count > 0)
+        {
+            Console.WriteLine($"  Dependents:   {string.Join(", ", dependents)}");
+        }
+
+        Console.WriteLine();
+    }
+
+    public IEnumerable<string> GetTasksByGroup(string group)
+    {
+        return _tasks
+            .Where(t => t.Value.Group.Equals(group, StringComparison.OrdinalIgnoreCase))
+            .Select(t => t.Key);
+    }
+
+    public IEnumerable<string> GetTasksByPattern(string pattern)
+    {
+        // Convert glob pattern to regex
+        var regexPattern = "^" + Regex.Escape(pattern)
+            .Replace("\\*", ".*")
+            .Replace("\\?", ".") + "$";
+
+        var regex = new Regex(regexPattern, RegexOptions.IgnoreCase);
+        return _tasks.Keys.Where(name => regex.IsMatch(name));
+    }
+
+    public IEnumerable<string> GetTasksByTag(string tag)
+    {
+        return _tasks
+            .Where(t => t.Value.Tags.Any(t => t.Equals(tag, StringComparison.OrdinalIgnoreCase)))
+            .Select(t => t.Key);
+    }
+
+    public async Task<int> ExecuteTasksAsync(IEnumerable<string> taskNames)
+    {
+        var names = taskNames.ToList();
+        if (names.Count == 0)
+        {
+            Console.WriteLine("No tasks matched the criteria.");
+            return 1;
+        }
+
+        Console.WriteLine($"Running {names.Count} task(s): {string.Join(", ", names)}");
+        Console.WriteLine();
+
+        foreach (var taskName in names)
+        {
+            var result = await ExecuteTaskAsync(taskName);
+            if (result != 0)
+            {
+                return result;
+            }
+        }
+
+        return 0;
+    }
+
+    private string SubstituteVariables(string input)
+    {
+        if (string.IsNullOrEmpty(input) || _variables.Count == 0)
+            return input;
+
+        // Pattern matches ${varName} or $varName
+        var result = Regex.Replace(input, @"\$\{([^}]+)\}|\$([a-zA-Z_][a-zA-Z0-9_]*)", match =>
+        {
+            var varName = match.Groups[1].Success ? match.Groups[1].Value : match.Groups[2].Value;
+
+            // Check for env: prefix to read from environment
+            if (varName.StartsWith("env:"))
+            {
+                var envName = varName.Substring(4);
+                return Environment.GetEnvironmentVariable(envName) ?? match.Value;
+            }
+
+            // Check configured variables
+            if (_variables.TryGetValue(varName, out var value))
+            {
+                return value;
+            }
+
+            // Check environment variables as fallback
+            var envValue = Environment.GetEnvironmentVariable(varName);
+            if (envValue != null)
+            {
+                return envValue;
+            }
+
+            // Return original if not found
+            _logger.Warning("Variable '{VarName}' not found", varName);
+            return match.Value;
+        });
+
+        return result;
     }
 }
