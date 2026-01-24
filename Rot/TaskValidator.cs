@@ -2,7 +2,7 @@ using Rot.Models;
 
 namespace Rot.Services;
 
-public class ValidationResult
+public class TaskValidationResult
 {
     public bool IsValid => Errors.Count == 0;
     public List<string> Errors { get; } = new();
@@ -20,18 +20,23 @@ public class TaskValidator
         "process"
     };
 
-    public ValidationResult Validate(string taskName, TaskDefinition task)
+    public TaskValidationResult Validate(string taskName, TaskDefinition task)
     {
-        var result = new ValidationResult();
+        var result = new TaskValidationResult();
 
         if (string.IsNullOrWhiteSpace(taskName))
         {
             result.AddError("Task name cannot be empty.");
         }
 
-        if (string.IsNullOrWhiteSpace(task.Command))
+        // Command is required unless the task has dependencies, pre-tasks, or post-tasks
+        // (orchestration-only tasks are valid)
+        if (string.IsNullOrWhiteSpace(task.Command) &&
+            task.DependsOn.Length == 0 &&
+            task.PreTasks.Length == 0 &&
+            task.PostTasks.Length == 0)
         {
-            result.AddError($"Task '{taskName}': 'command' is required.");
+            result.AddError($"Task '{taskName}': 'command' is required (unless task has dependencies, pre-tasks, or post-tasks).");
         }
 
         if (!string.IsNullOrEmpty(task.Type) && !ValidTaskTypes.Contains(task.Type))
@@ -64,7 +69,7 @@ public class TaskValidator
         return result;
     }
 
-    private void ValidateCondition(string taskName, TaskCondition condition, ValidationResult result)
+    private void ValidateCondition(string taskName, TaskCondition condition, TaskValidationResult result)
     {
         if (!string.IsNullOrEmpty(condition.Os))
         {
@@ -76,7 +81,7 @@ public class TaskValidator
         }
     }
 
-    private void ValidateCacheConfig(string taskName, TaskCacheConfig cache, ValidationResult result)
+    private void ValidateCacheConfig(string taskName, TaskCacheConfig cache, TaskValidationResult result)
     {
         if (cache.Inputs.Length == 0)
         {
@@ -89,9 +94,9 @@ public class TaskValidator
         }
     }
 
-    public ValidationResult ValidateAll(Dictionary<string, TaskDefinition> tasks)
+    public TaskValidationResult ValidateAll(Dictionary<string, TaskDefinition> tasks)
     {
-        var result = new ValidationResult();
+        var result = new TaskValidationResult();
 
         if (tasks.Count == 0)
         {

@@ -1,6 +1,7 @@
 using System.CommandLine;
 using System.CommandLine.Invocation;
 using Rot.Logging;
+using Rot.Models;
 using Rot.Services;
 
 var fileOption = new Option<string>(
@@ -195,7 +196,7 @@ runCommand.SetHandler(async (InvocationContext context) =>
         ITaskLogger logger = CreateLogger(verbose, quiet, logFile);
         bool captureOutput = !string.IsNullOrEmpty(outputFile) || jsonOutput;
         TaskExecutor executor = TaskExecutor.LoadFromFile(file, concurrent, dryRun, noCache, profile, logger, captureOutput);
-        Models.TasksResult tasksResult;
+        TasksResult tasksResult;
 
         // Determine which tasks to run based on options
         if (!string.IsNullOrEmpty(group))
@@ -223,7 +224,7 @@ runCommand.SetHandler(async (InvocationContext context) =>
             else
             {
                 var result = await executor.ExecuteTaskWithResultAsync(task);
-                tasksResult = new Models.TasksResult { Results = new[] { result } };
+                tasksResult = new TasksResult { Results = new[] { result } };
             }
         }
         else

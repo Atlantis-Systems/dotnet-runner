@@ -1084,6 +1084,31 @@ public class TaskExecutor
                 return TaskResult.SkippedResult(taskName, "Cached");
             }
 
+            // Handle orchestration-only tasks (no command but has dependencies/pre-tasks/post-tasks)
+            if (string.IsNullOrWhiteSpace(task.Command))
+            {
+                _logger.Info("Task '{TaskName}' is an orchestration-only task (no command)", taskName);
+                Console.WriteLine($"{taskLabel} Orchestration-only task completed.");
+
+                // Execute post-tasks (hooks)
+                if (task.PostTasks.Length > 0)
+                {
+                    foreach (var postTask in task.PostTasks)
+                    {
+                        var postResult = await ExecuteTaskWithResultAsync(postTask);
+                        if (!postResult.Success)
+                        {
+                            _logger.Error("Post-task '{PostTask}' failed for task '{TaskName}'", postTask, taskName);
+                            Console.WriteLine($"{taskLabel} Post-task '{postTask}' failed.");
+                            return TaskResult.Failed(taskName, postResult.ExitCode, $"Post-task '{postTask}' failed");
+                        }
+                    }
+                }
+
+                await MarkTaskComplete(taskName);
+                return TaskResult.Succeeded(taskName, TimeSpan.Zero);
+            }
+
             _logger.Info("Executing task '{TaskName}': {Command}", taskName, task.Command);
             Console.WriteLine($"{taskLabel} Executing task...");
 
@@ -1122,7 +1147,7 @@ public class TaskExecutor
             }
             else if (exitCode == -1)
             {
-                _logger.Error("Task '{TaskName}' timed out after {Timeout} seconds", taskName, task.Timeout);
+                _logger.Error("Task '{TaskName}' timed out after {Timeout} seconds", taskName, task.Timeout ?? 0);
                 Console.WriteLine($"{taskLabel} Task timed out after {task.Timeout} seconds.");
                 return TaskResult.TimedOut(taskName, task.Timeout ?? 0);
             }
@@ -1130,7 +1155,7 @@ public class TaskExecutor
             {
                 _logger.Error("Task '{TaskName}' failed with exit code {ExitCode}", taskName, exitCode);
                 Console.WriteLine($"{taskLabel} Task failed with exit code {exitCode}.");
-                return TaskResult.Failed(taskName, exitCode, $"Task failed with exit code {exitCode}", taskStopwatch.Elapsed);
+                return TaskResult.Failed(taskName, exitCode, $"Task failed with exit code {exitCode}", taskStopwatch.Elapsed, stdout, stderr);
             }
         }
         finally

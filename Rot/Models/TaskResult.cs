@@ -88,13 +88,16 @@ public record TaskResult
     /// <summary>
     /// Creates a failed result.
     /// </summary>
-    public static TaskResult Failed(string taskName, int exitCode, string? errorMessage = null, TimeSpan? duration = null) => new()
+    public static TaskResult Failed(string taskName, int exitCode, string? errorMessage = null, TimeSpan? duration = null, string? stdout = null, string? stderr = null) => new()
     {
         Success = false,
         ExitCode = exitCode,
         TaskName = taskName,
         ErrorMessage = errorMessage,
-        Duration = duration ?? TimeSpan.Zero
+        Duration = duration ?? TimeSpan.Zero,
+        StandardOutput = stdout,
+        StandardError = stderr,
+        CombinedOutput = CombineOutput(stdout, stderr)
     };
 
     /// <summary>

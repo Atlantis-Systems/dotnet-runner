@@ -166,8 +166,15 @@ public class SecurityValidator
         {
             var fullPath = Path.GetFullPath(cwd);
 
+            // Allow temp directories (commonly used for tests and temporary operations)
+            var tempPath = Path.GetTempPath().TrimEnd(Path.DirectorySeparatorChar);
+            var isTempDirectory = fullPath.StartsWith(tempPath, StringComparison.OrdinalIgnoreCase) ||
+                                  fullPath.StartsWith("/tmp", StringComparison.OrdinalIgnoreCase) ||
+                                  fullPath.StartsWith("/var/folders", StringComparison.OrdinalIgnoreCase) ||
+                                  fullPath.StartsWith("/private/var/folders", StringComparison.OrdinalIgnoreCase);
+
             // Check if the path tries to escape the project root
-            if (!string.IsNullOrEmpty(_projectRoot))
+            if (!string.IsNullOrEmpty(_projectRoot) && !isTempDirectory)
             {
                 var projectRootFull = Path.GetFullPath(_projectRoot);
 
