@@ -192,17 +192,17 @@ public class TaskExecutor
     {
         var task = _tasks[taskName];
         var displayLabel = !string.IsNullOrEmpty(task.Label) ? task.Label : taskName;
-        
+
         var colors = new[] { ConsoleColor.Cyan, ConsoleColor.Green, ConsoleColor.Yellow, ConsoleColor.Magenta, ConsoleColor.Blue };
         var colorIndex = Math.Abs(taskName.GetHashCode()) % colors.Length;
         var color = colors[colorIndex];
-        
+
         var originalColor = Console.ForegroundColor;
         Console.ForegroundColor = color;
         Console.ForegroundColor = originalColor;
         return $"\u001b[1m\u001b[{GetAnsiColorCode(color)}m({displayLabel})\u001b[0m";
     }
-    
+
     private int GetAnsiColorCode(ConsoleColor color)
     {
         return color switch
