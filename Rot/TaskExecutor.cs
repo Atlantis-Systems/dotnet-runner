@@ -24,6 +24,8 @@ public class TaskExecutor
     private readonly ConditionEvaluator _conditionEvaluator;
     private readonly CacheManager _cacheManager;
     private readonly PluginLoader _pluginLoader;
+    private readonly SecurityValidator _securityValidator;
+    private readonly bool _captureOutput;
 
     public TaskExecutor(
         Dictionary<string, TaskDefinition> tasks,
@@ -34,7 +36,8 @@ public class TaskExecutor
         bool dryRun = false,
         bool noCache = false,
         ITaskLogger? logger = null,
-        PluginLoader? pluginLoader = null)
+        PluginLoader? pluginLoader = null,
+        bool captureOutput = false)
     {
         _tasks = tasks;
         _aliases = aliases ?? new Dictionary<string, string[]>();
@@ -43,10 +46,12 @@ public class TaskExecutor
         _allowConcurrency = allowConcurrency;
         _dryRun = dryRun;
         _noCache = noCache;
+        _captureOutput = captureOutput;
         _logger = logger ?? NullLogger.Instance;
         _conditionEvaluator = new ConditionEvaluator(_logger);
         _cacheManager = new CacheManager(_logger);
         _pluginLoader = pluginLoader ?? new PluginLoader(_logger);
+        _securityValidator = new SecurityValidator(_logger);
     }
 
     public static TaskExecutor LoadFromFile(
@@ -55,10 +60,11 @@ public class TaskExecutor
         bool dryRun = false,
         bool noCache = false,
         string? profile = null,
-        ITaskLogger? logger = null)
+        ITaskLogger? logger = null,
+        bool captureOutput = false)
     {
         if (!File.Exists(filePath))
-            throw new FileNotFoundException($"Tasks file not found: {filePath}");
+            throw new FileNotFoundException(ErrorMessageHelper.GetFileNotFoundMessage(filePath));
 
         var fileContent = File.ReadAllText(filePath);
         TasksConfig? config = null;
@@ -83,7 +89,7 @@ public class TaskExecutor
                 break;
 
             default:
-                throw new NotSupportedException($"File extension '{extension}' is not supported. Use .json, .yaml, or .yml files.");
+                throw new NotSupportedException(ErrorMessageHelper.GetUnsupportedFormatMessage(extension));
         }
 
         var tasks = config?.Tasks ?? new Dictionary<string, TaskDefinition>();
@@ -112,8 +118,7 @@ public class TaskExecutor
             }
             else
             {
-                var availableProfiles = string.Join(", ", config.Profiles.Keys);
-                throw new InvalidOperationException($"Profile '{profile}' not found. Available profiles: {availableProfiles}");
+                throw new InvalidOperationException(ErrorMessageHelper.GetProfileNotFoundMessage(profile, config.Profiles.Keys));
             }
         }
 
@@ -144,7 +149,7 @@ public class TaskExecutor
         var pluginLoader = new PluginLoader(logger ?? NullLogger.Instance);
         // Note: Plugin names would come from config if we add plugins array to TasksConfig
 
-        return new TaskExecutor(tasks, aliases, variables, profileEnv, allowConcurrency, dryRun, noCache, logger, pluginLoader);
+        return new TaskExecutor(tasks, aliases, variables, profileEnv, allowConcurrency, dryRun, noCache, logger, pluginLoader, captureOutput);
     }
 
     /// <summary>
@@ -214,14 +219,15 @@ public class TaskExecutor
         };
     }
 
-    private async Task<int> RunCommandAsync(TaskDefinition task, string taskName)
+    private async Task<(int exitCode, string? stdout, string? stderr)> RunCommandAsync(TaskDefinition task, string taskName)
     {
         // Check if this is a plugin-provided task type
         var provider = _pluginLoader.GetProvider(task.Type);
         if (provider != null)
         {
             _logger.Debug("Using plugin provider for task type '{TaskType}'", task.Type);
-            return await provider.ExecuteAsync(task, taskName, _logger);
+            var pluginResult = await provider.ExecuteAsync(task, taskName, _logger);
+            return (pluginResult, null, null);
         }
 
         var processInfo = new ProcessStartInfo();
@@ -229,6 +235,20 @@ public class TaskExecutor
         // Apply variable substitution to command and args
         var command = SubstituteVariables(task.Command);
         var args = task.Args.Select(SubstituteVariables).ToArray();
+        var cwd = !string.IsNullOrEmpty(task.Cwd) ? SubstituteVariables(task.Cwd) : null;
+
+        // Security validation
+        var securityResult = _securityValidator.ValidateTask(taskName, command, cwd, task.Env);
+        if (!securityResult.IsValid)
+        {
+            foreach (var error in securityResult.Errors)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"Security Error: {error}");
+                Console.ResetColor();
+            }
+            return (1, null, string.Join("\n", securityResult.Errors));
+        }
 
         if (task.Type == "shell" || string.IsNullOrEmpty(task.Type))
         {
@@ -258,13 +278,14 @@ public class TaskExecutor
         }
         else
         {
-            Console.WriteLine($"Unsupported task type: {task.Type}. Available types: {string.Join(", ", _pluginLoader.GetRegisteredTaskTypes())}");
-            return 1;
+            var errorMsg = $"Unsupported task type: {task.Type}. Available types: {string.Join(", ", _pluginLoader.GetRegisteredTaskTypes())}";
+            Console.WriteLine(errorMsg);
+            return (1, null, errorMsg);
         }
 
-        if (!string.IsNullOrEmpty(task.Cwd))
+        if (!string.IsNullOrEmpty(cwd))
         {
-            processInfo.WorkingDirectory = SubstituteVariables(task.Cwd);
+            processInfo.WorkingDirectory = cwd;
         }
 
         // Apply profile environment variables first
@@ -286,20 +307,35 @@ public class TaskExecutor
 
         using var process = new Process { StartInfo = processInfo };
 
-        if (task.Echo)
+        // For output capture, we need to collect output differently
+        var stdoutBuilder = _captureOutput ? new System.Text.StringBuilder() : null;
+        var stderrBuilder = _captureOutput ? new System.Text.StringBuilder() : null;
+
+        var taskLabel = GetColoredTaskLabel(taskName);
+
+        process.OutputDataReceived += (_, e) =>
         {
-            var taskLabel = GetColoredTaskLabel(taskName);
-            process.OutputDataReceived += (_, e) => { if (e.Data != null) Console.WriteLine($"{taskLabel} {e.Data}"); };
-            process.ErrorDataReceived += (_, e) => { if (e.Data != null) Console.Error.WriteLine($"{taskLabel} {e.Data}"); };
-        }
+            if (e.Data != null)
+            {
+                if (task.Echo)
+                    Console.WriteLine($"{taskLabel} {e.Data}");
+                stdoutBuilder?.AppendLine(e.Data);
+            }
+        };
+
+        process.ErrorDataReceived += (_, e) =>
+        {
+            if (e.Data != null)
+            {
+                if (task.Echo)
+                    Console.Error.WriteLine($"{taskLabel} {e.Data}");
+                stderrBuilder?.AppendLine(e.Data);
+            }
+        };
 
         process.Start();
-
-        if (task.Echo)
-        {
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
-        }
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
 
         if (task.Timeout.HasValue && task.Timeout.Value > 0)
         {
@@ -307,7 +343,7 @@ public class TaskExecutor
             try
             {
                 await process.WaitForExitAsync(cts.Token);
-                return process.ExitCode;
+                return (process.ExitCode, stdoutBuilder?.ToString(), stderrBuilder?.ToString());
             }
             catch (OperationCanceledException)
             {
@@ -319,12 +355,12 @@ public class TaskExecutor
                 {
                     // Process may have already exited
                 }
-                return -1;
+                return (-1, stdoutBuilder?.ToString(), stderrBuilder?.ToString());
             }
         }
 
         await process.WaitForExitAsync();
-        return process.ExitCode;
+        return (process.ExitCode, stdoutBuilder?.ToString(), stderrBuilder?.ToString());
     }
 
     private void PrintDryRunInfo(TaskDefinition task, string taskName, string taskLabel)
@@ -416,6 +452,28 @@ public class TaskExecutor
         return await ExecuteTasksAsync(tasks);
     }
 
+    public async Task<TasksResult> ExecuteAliasWithResultAsync(string aliasName)
+    {
+        if (!_aliases.TryGetValue(aliasName, out var tasks))
+        {
+            _logger.Error("Alias '{AliasName}' not found", aliasName);
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"Alias '{aliasName}' not found.");
+            Console.ResetColor();
+            return new TasksResult
+            {
+                Results = new[] { TaskResult.Failed("", 1, $"Alias '{aliasName}' not found") }
+            };
+        }
+
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine($"Running alias '{aliasName}': {string.Join(" → ", tasks)}");
+        Console.ResetColor();
+        Console.WriteLine();
+
+        return await ExecuteTasksWithResultAsync(tasks);
+    }
+
     public IEnumerable<string> GetTaskNames()
     {
         return _tasks.Keys;
@@ -428,22 +486,10 @@ public class TaskExecutor
 
     private void PrintTaskNotFoundError(string taskName)
     {
+        var message = ErrorMessageHelper.GetTaskNotFoundMessage(taskName, _tasks.Keys, _aliases.Keys);
         Console.ForegroundColor = ConsoleColor.Red;
-        Console.WriteLine($"Task '{taskName}' not found.");
+        Console.WriteLine(message);
         Console.ResetColor();
-
-        var availableTasks = _tasks.Keys.ToList();
-        if (availableTasks.Count > 0)
-        {
-            Console.WriteLine($"Available tasks: {string.Join(", ", availableTasks)}");
-
-            // Suggest similar task names
-            var similar = FindSimilarTasks(taskName, availableTasks);
-            if (similar.Count > 0)
-            {
-                Console.WriteLine($"Did you mean: {string.Join(", ", similar)}?");
-            }
-        }
     }
 
     private List<string> FindSimilarTasks(string input, List<string> taskNames)
@@ -1042,7 +1088,7 @@ public class TaskExecutor
             Console.WriteLine($"{taskLabel} Executing task...");
 
             var taskStopwatch = Stopwatch.StartNew();
-            var exitCode = await RunCommandAsync(task, taskName);
+            var (exitCode, stdout, stderr) = await RunCommandAsync(task, taskName);
             taskStopwatch.Stop();
 
             if (exitCode == 0)
@@ -1072,7 +1118,7 @@ public class TaskExecutor
                 }
 
                 await MarkTaskComplete(taskName);
-                return TaskResult.Succeeded(taskName, taskStopwatch.Elapsed);
+                return TaskResult.Succeeded(taskName, taskStopwatch.Elapsed, stdout, stderr);
             }
             else if (exitCode == -1)
             {

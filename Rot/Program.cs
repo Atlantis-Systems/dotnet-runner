@@ -58,6 +58,16 @@ var noCacheOption = new Option<bool>(
     description: "Disable task caching",
     getDefaultValue: () => false);
 
+var outputOption = new Option<string?>(
+    aliases: ["--output", "-o"],
+    description: "Write task output to a file",
+    getDefaultValue: () => null);
+
+var jsonOption = new Option<bool>(
+    aliases: ["--json"],
+    description: "Output results as JSON",
+    getDefaultValue: () => false);
+
 var listCommand = new Command("list", "List all available tasks")
 {
     fileOption
@@ -75,7 +85,9 @@ var runCommand = new Command("run", "Run a specific task")
     patternOption,
     tagOption,
     profileOption,
-    noCacheOption
+    noCacheOption,
+    outputOption,
+    jsonOption
 };
 
 var initCommand = new Command("init", "Initialize a new tasks file");
@@ -83,7 +95,12 @@ var formatOption = new Option<string>(
     aliases: ["--format"],
     description: "File format (json or yaml)",
     getDefaultValue: () => "json");
+var templateOption = new Option<string>(
+    aliases: ["--template", "-t"],
+    description: "Project template: dotnet, node, python, docker, or default",
+    getDefaultValue: () => "default");
 initCommand.AddOption(formatOption);
+initCommand.AddOption(templateOption);
 
 var describeCommand = new Command("describe", "Show detailed information about a task")
 {
@@ -170,39 +187,43 @@ runCommand.SetHandler(async (InvocationContext context) =>
     string? tag = context.ParseResult.GetValueForOption(tagOption);
     string? profile = context.ParseResult.GetValueForOption(profileOption);
     bool noCache = context.ParseResult.GetValueForOption(noCacheOption);
+    string? outputFile = context.ParseResult.GetValueForOption(outputOption);
+    bool jsonOutput = context.ParseResult.GetValueForOption(jsonOption);
 
     try
     {
         ITaskLogger logger = CreateLogger(verbose, quiet, logFile);
-        TaskExecutor executor = TaskExecutor.LoadFromFile(file, concurrent, dryRun, noCache, profile, logger);
-        int result;
+        bool captureOutput = !string.IsNullOrEmpty(outputFile) || jsonOutput;
+        TaskExecutor executor = TaskExecutor.LoadFromFile(file, concurrent, dryRun, noCache, profile, logger, captureOutput);
+        Models.TasksResult tasksResult;
 
         // Determine which tasks to run based on options
         if (!string.IsNullOrEmpty(group))
         {
             IEnumerable<string> tasks = executor.GetTasksByGroup(group);
-            result = await executor.ExecuteTasksAsync(tasks);
+            tasksResult = await executor.ExecuteTasksWithResultAsync(tasks);
         }
         else if (!string.IsNullOrEmpty(pattern))
         {
             IEnumerable<string> tasks = executor.GetTasksByPattern(pattern);
-            result = await executor.ExecuteTasksAsync(tasks);
+            tasksResult = await executor.ExecuteTasksWithResultAsync(tasks);
         }
         else if (!string.IsNullOrEmpty(tag))
         {
             IEnumerable<string> tasks = executor.GetTasksByTag(tag);
-            result = await executor.ExecuteTasksAsync(tasks);
+            tasksResult = await executor.ExecuteTasksWithResultAsync(tasks);
         }
         else if (!string.IsNullOrEmpty(task))
         {
             // Check if it's an alias first
             if (executor.HasAlias(task))
             {
-                result = await executor.ExecuteAliasAsync(task);
+                tasksResult = await executor.ExecuteAliasWithResultAsync(task);
             }
             else
             {
-                result = await executor.ExecuteTaskAsync(task);
+                var result = await executor.ExecuteTaskWithResultAsync(task);
+                tasksResult = new Models.TasksResult { Results = new[] { result } };
             }
         }
         else
@@ -212,8 +233,40 @@ runCommand.SetHandler(async (InvocationContext context) =>
             return;
         }
 
+        // Handle output
+        if (jsonOutput)
+        {
+            var jsonResult = System.Text.Json.JsonSerializer.Serialize(tasksResult, new System.Text.Json.JsonSerializerOptions
+            {
+                WriteIndented = true,
+                PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
+            });
+            Console.WriteLine(jsonResult);
+
+            if (!string.IsNullOrEmpty(outputFile))
+            {
+                await File.WriteAllTextAsync(outputFile, jsonResult);
+            }
+        }
+        else if (!string.IsNullOrEmpty(outputFile))
+        {
+            // Write captured output to file
+            var output = new System.Text.StringBuilder();
+            foreach (var result in tasksResult.Results)
+            {
+                if (!string.IsNullOrEmpty(result.CombinedOutput))
+                {
+                    output.AppendLine($"=== Task: {result.TaskName} ===");
+                    output.AppendLine(result.CombinedOutput);
+                    output.AppendLine();
+                }
+            }
+            await File.WriteAllTextAsync(outputFile, output.ToString());
+            Console.WriteLine($"Output written to: {outputFile}");
+        }
+
         (logger as IDisposable)?.Dispose();
-        Environment.Exit(result);
+        Environment.Exit(tasksResult.ExitCode);
     }
     catch (Exception ex)
     {
@@ -222,164 +275,30 @@ runCommand.SetHandler(async (InvocationContext context) =>
     }
 });
 
-initCommand.SetHandler((string format) =>
+initCommand.SetHandler((string format, string template) =>
 {
     try
     {
-        const string defaultTasksJson = """
-                                        {
-                                          "version": "4.0.0",
-                                          "variables": {
-                                            "config": "Debug",
-                                            "outputDir": "./bin"
-                                          },
-                                          "profiles": {
-                                            "dev": {
-                                              "variables": { "config": "Debug" },
-                                              "env": { "DOTNET_ENVIRONMENT": "Development" }
-                                            },
-                                            "prod": {
-                                              "variables": { "config": "Release" },
-                                              "env": { "DOTNET_ENVIRONMENT": "Production" }
-                                            }
-                                          },
-                                          "aliases": {
-                                            "ci": ["restore", "build", "test"],
-                                            "rebuild": ["clean", "build"]
-                                          },
-                                          "tasks": {
-                                            "build": {
-                                              "label": "Build the project",
-                                              "type": "shell",
-                                              "command": "dotnet build -c ${config}",
-                                              "group": "build",
-                                              "tags": ["ci", "dev"],
-                                              "cache": {
-                                                "inputs": ["**/*.cs", "**/*.csproj"],
-                                                "outputs": ["bin/", "obj/"]
-                                              }
-                                            },
-                                            "test": {
-                                              "label": "Run tests",
-                                              "type": "shell",
-                                              "command": "dotnet test -c ${config}",
-                                              "group": "test",
-                                              "tags": ["ci", "dev"],
-                                              "dependsOn": ["build"]
-                                            },
-                                            "clean": {
-                                              "label": "Clean build artifacts",
-                                              "type": "shell",
-                                              "command": "dotnet clean",
-                                              "group": "build",
-                                              "tags": ["dev"]
-                                            },
-                                            "restore": {
-                                              "label": "Restore packages",
-                                              "type": "shell",
-                                              "command": "dotnet restore",
-                                              "tags": ["ci"]
-                                            },
-                                            "deploy": {
-                                              "label": "Deploy application",
-                                              "type": "shell",
-                                              "command": "echo Deploying...",
-                                              "condition": {
-                                                "env": { "CI": "true" }
-                                              },
-                                              "preTasks": ["build", "test"]
-                                            }
-                                          }
-                                        }
-                                        """;
-
-        const string defaultTasksYaml = """
-                                        version: "4.0.0"
-                                        variables:
-                                          config: Debug
-                                          outputDir: ./bin
-                                        profiles:
-                                          dev:
-                                            variables:
-                                              config: Debug
-                                            env:
-                                              DOTNET_ENVIRONMENT: Development
-                                          prod:
-                                            variables:
-                                              config: Release
-                                            env:
-                                              DOTNET_ENVIRONMENT: Production
-                                        aliases:
-                                          ci:
-                                            - restore
-                                            - build
-                                            - test
-                                          rebuild:
-                                            - clean
-                                            - build
-                                        tasks:
-                                          build:
-                                            label: Build the project
-                                            type: shell
-                                            command: dotnet build -c ${config}
-                                            group: build
-                                            tags:
-                                              - ci
-                                              - dev
-                                            cache:
-                                              inputs:
-                                                - "**/*.cs"
-                                                - "**/*.csproj"
-                                              outputs:
-                                                - bin/
-                                                - obj/
-                                          test:
-                                            label: Run tests
-                                            type: shell
-                                            command: dotnet test -c ${config}
-                                            group: test
-                                            tags:
-                                              - ci
-                                              - dev
-                                            dependsOn:
-                                              - build
-                                          clean:
-                                            label: Clean build artifacts
-                                            type: shell
-                                            command: dotnet clean
-                                            group: build
-                                            tags:
-                                              - dev
-                                          restore:
-                                            label: Restore packages
-                                            type: shell
-                                            command: dotnet restore
-                                            tags:
-                                              - ci
-                                          deploy:
-                                            label: Deploy application
-                                            type: shell
-                                            command: echo Deploying...
-                                            condition:
-                                              env:
-                                                CI: "true"
-                                            preTasks:
-                                              - build
-                                              - test
-                                        """;
+        // Validate template
+        if (!InitTemplates.AvailableTemplates.Contains(template.ToLowerInvariant()))
+        {
+            Console.Error.WriteLine($"Unknown template '{template}'. Available templates: {string.Join(", ", InitTemplates.AvailableTemplates)}");
+            Environment.Exit(1);
+            return;
+        }
 
         string fileName;
         string content;
-        
+
         if (format.Equals("yaml", StringComparison.InvariantCultureIgnoreCase) || format.Equals("yml", StringComparison.InvariantCultureIgnoreCase))
         {
             fileName = "tasks.yaml";
-            content = defaultTasksYaml;
+            content = InitTemplates.GetTemplateYaml(template);
         }
         else
         {
             fileName = "tasks.json";
-            content = defaultTasksJson;
+            content = InitTemplates.GetTemplateJson(template);
         }
 
         if (File.Exists(fileName))
@@ -389,7 +308,14 @@ initCommand.SetHandler((string format) =>
         }
 
         File.WriteAllText(fileName, content);
-        Console.WriteLine($"Created {fileName} with default .NET tasks.");
+        Console.WriteLine($"Created {fileName} with {template} template.");
+        Console.WriteLine();
+        Console.WriteLine("Available templates:");
+        foreach (var t in InitTemplates.AvailableTemplates)
+        {
+            var marker = t == template.ToLowerInvariant() ? " (current)" : "";
+            Console.WriteLine($"  - {t}{marker}");
+        }
         Environment.Exit(0);
     }
     catch (Exception ex)
@@ -397,7 +323,7 @@ initCommand.SetHandler((string format) =>
         Console.Error.WriteLine($"Error creating tasks file: {ex.Message}");
         Environment.Exit(1);
     }
-}, formatOption);
+}, formatOption, templateOption);
 
 describeCommand.SetHandler((string file, string task) =>
 {
