@@ -46,15 +46,44 @@ public record TaskResult
     public bool DryRun { get; init; }
 
     /// <summary>
+    /// Captured standard output from the task.
+    /// </summary>
+    public string? StandardOutput { get; init; }
+
+    /// <summary>
+    /// Captured standard error from the task.
+    /// </summary>
+    public string? StandardError { get; init; }
+
+    /// <summary>
+    /// Combined output (stdout + stderr) from the task.
+    /// </summary>
+    public string? CombinedOutput { get; init; }
+
+    /// <summary>
     /// Creates a successful result.
     /// </summary>
-    public static TaskResult Succeeded(string taskName, TimeSpan duration) => new()
+    public static TaskResult Succeeded(string taskName, TimeSpan duration, string? stdout = null, string? stderr = null) => new()
     {
         Success = true,
         ExitCode = 0,
         TaskName = taskName,
-        Duration = duration
+        Duration = duration,
+        StandardOutput = stdout,
+        StandardError = stderr,
+        CombinedOutput = CombineOutput(stdout, stderr)
     };
+
+    private static string? CombineOutput(string? stdout, string? stderr)
+    {
+        if (string.IsNullOrEmpty(stdout) && string.IsNullOrEmpty(stderr))
+            return null;
+        if (string.IsNullOrEmpty(stderr))
+            return stdout;
+        if (string.IsNullOrEmpty(stdout))
+            return stderr;
+        return $"{stdout}\n{stderr}";
+    }
 
     /// <summary>
     /// Creates a failed result.

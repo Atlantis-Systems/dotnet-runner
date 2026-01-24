@@ -17,7 +17,12 @@ dotnet tool install --global Rot
 
 ### Initialize a new tasks.json file
 ```bash
-rotinit
+rot init                         # Creates tasks.json with default template
+rot init --format yaml           # Creates tasks.yaml
+rot init --template dotnet       # .NET project template
+rot init --template node         # Node.js project template
+rot init --template python       # Python project template
+rot init --template docker       # Docker project template
 ```
 
 ### List available tasks
@@ -42,6 +47,13 @@ rot run build --quiet            # Only show errors
 rot run --group build            # Run all tasks in "build" group
 rot run --pattern "test-*"       # Run tasks matching pattern
 rot run --tag ci                 # Run all tasks tagged with "ci"
+```
+
+### Output Capture
+```bash
+rot run build --output build.log   # Write output to file
+rot run build --json               # Output results as JSON
+rot run build --json -o results.json  # JSON output to file
 ```
 
 ### Describe a task
