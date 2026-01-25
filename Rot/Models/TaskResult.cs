@@ -46,6 +46,11 @@ public record TaskResult
     public bool DryRun { get; init; }
 
     /// <summary>
+    /// Whether the task was cancelled by the user.
+    /// </summary>
+    public bool WasCancelled { get; init; }
+
+    /// <summary>
     /// Captured standard output from the task.
     /// </summary>
     public string? StandardOutput { get; init; }
@@ -154,6 +159,18 @@ public record TaskResult
         ExitCode = 1,
         TaskName = taskName,
         ErrorMessage = $"Circular dependency detected for task '{taskName}'"
+    };
+
+    /// <summary>
+    /// Creates a cancelled result.
+    /// </summary>
+    public static TaskResult Cancelled(string taskName) => new()
+    {
+        Success = false,
+        ExitCode = 130, // Standard exit code for Ctrl+C
+        TaskName = taskName,
+        ErrorMessage = "Task was cancelled by user",
+        WasCancelled = true
     };
 }
 

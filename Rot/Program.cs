@@ -69,6 +69,22 @@ var jsonOption = new Option<bool>(
     description: "Output results as JSON",
     getDefaultValue: () => false);
 
+// Phase 6: New options
+var nonInteractiveOption = new Option<bool>(
+    aliases: ["--non-interactive", "-y"],
+    description: "Skip prompts and use default values",
+    getDefaultValue: () => false);
+
+var auditOption = new Option<bool>(
+    aliases: ["--audit"],
+    description: "Enable audit logging of all task executions",
+    getDefaultValue: () => false);
+
+var auditFileOption = new Option<string?>(
+    aliases: ["--audit-file"],
+    description: "Path to the audit log file",
+    getDefaultValue: () => null);
+
 var listCommand = new Command("list", "List all available tasks")
 {
     fileOption
@@ -88,7 +104,10 @@ var runCommand = new Command("run", "Run a specific task")
     profileOption,
     noCacheOption,
     outputOption,
-    jsonOption
+    jsonOption,
+    nonInteractiveOption,
+    auditOption,
+    auditFileOption
 };
 
 var initCommand = new Command("init", "Initialize a new tasks file");
@@ -129,6 +148,15 @@ var graphCommand = new Command("graph", "Display task dependency graph")
 };
 var graphTaskArgument = new Argument<string?>("task", () => null, "Show graph for a specific task (optional)");
 graphCommand.Add(graphTaskArgument);
+
+// Phase 6: Audit command
+var auditCommand = new Command("audit", "View recent audit log entries");
+var auditCountOption = new Option<int>(
+    aliases: ["--count", "-n"],
+    description: "Number of entries to show",
+    getDefaultValue: () => 20);
+auditCommand.AddOption(auditFileOption);
+auditCommand.AddOption(auditCountOption);
 var watchTaskArgument = new Argument<string>("task", "Name of the task to run on changes");
 var globOption = new Option<string>(
     aliases: ["--glob"],
@@ -154,6 +182,7 @@ var rootCommand = new RootCommand("A .NET tool for running tasks defined in task
     watchCommand,
     graphCommand,
     completionCommand,
+    auditCommand,
     fileOption,
     concurrentOption,
     dryRunOption
@@ -190,12 +219,15 @@ runCommand.SetHandler(async (InvocationContext context) =>
     bool noCache = context.ParseResult.GetValueForOption(noCacheOption);
     string? outputFile = context.ParseResult.GetValueForOption(outputOption);
     bool jsonOutput = context.ParseResult.GetValueForOption(jsonOption);
+    bool nonInteractive = context.ParseResult.GetValueForOption(nonInteractiveOption);
+    bool enableAudit = context.ParseResult.GetValueForOption(auditOption);
+    string? auditFile = context.ParseResult.GetValueForOption(auditFileOption);
 
     try
     {
         ITaskLogger logger = CreateLogger(verbose, quiet, logFile);
         bool captureOutput = !string.IsNullOrEmpty(outputFile) || jsonOutput;
-        TaskExecutor executor = TaskExecutor.LoadFromFile(file, concurrent, dryRun, noCache, profile, logger, captureOutput);
+        using TaskExecutor executor = TaskExecutor.LoadFromFile(file, concurrent, dryRun, noCache, profile, logger, captureOutput, nonInteractive, auditFile, enableAudit);
         TasksResult tasksResult;
 
         // Determine which tasks to run based on options
@@ -370,6 +402,77 @@ graphCommand.SetHandler((string file, string? task) =>
         Environment.Exit(1);
     }
 }, fileOption, graphTaskArgument);
+
+auditCommand.SetHandler((string? auditFile, int count) =>
+{
+    try
+    {
+        var logger = new ConsoleLogger(LogLevel.Info);
+        var auditLogger = new AuditLogger(auditFile, logger, true);
+        var entries = auditLogger.GetRecentEntries(count);
+
+        if (entries.Count == 0)
+        {
+            Console.WriteLine("No audit entries found.");
+            Environment.Exit(0);
+            return;
+        }
+
+        Console.WriteLine();
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine($"Recent Audit Entries ({entries.Count})");
+        Console.ResetColor();
+        Console.WriteLine(new string('═', 80));
+        Console.WriteLine();
+
+        foreach (var entry in entries)
+        {
+            var statusColor = entry.Success ? ConsoleColor.Green : ConsoleColor.Red;
+            var statusIcon = entry.Success ? "✓" : "✗";
+
+            Console.ForegroundColor = ConsoleColor.DarkGray;
+            Console.Write($"[{entry.Timestamp:yyyy-MM-dd HH:mm:ss}] ");
+            Console.ResetColor();
+
+            Console.ForegroundColor = statusColor;
+            Console.Write($"{statusIcon} ");
+            Console.ResetColor();
+
+            Console.ForegroundColor = ConsoleColor.White;
+            Console.Write($"{entry.TaskName,-20} ");
+            Console.ResetColor();
+
+            Console.ForegroundColor = ConsoleColor.DarkYellow;
+            Console.Write($"{entry.EventType,-15} ");
+            Console.ResetColor();
+
+            if (entry.DurationMs.HasValue)
+            {
+                Console.ForegroundColor = ConsoleColor.DarkGray;
+                Console.Write($"({entry.DurationMs}ms) ");
+                Console.ResetColor();
+            }
+
+            if (!string.IsNullOrEmpty(entry.ErrorMessage))
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.Write($"- {entry.ErrorMessage}");
+                Console.ResetColor();
+            }
+
+            Console.WriteLine();
+        }
+
+        Console.WriteLine();
+        auditLogger.Dispose();
+        Environment.Exit(0);
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"Error: {ex.Message}");
+        Environment.Exit(1);
+    }
+}, auditFileOption, auditCountOption);
 
 watchCommand.SetHandler(async (string file, string task, string glob, int debounce, bool concurrent, bool verbose, bool quiet, string? logFile) =>
 {

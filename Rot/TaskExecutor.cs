@@ -8,7 +8,10 @@ using YamlDotNet.Serialization.NamingConventions;
 
 namespace Rot.Services;
 
-public class TaskExecutor
+/// <summary>
+/// Main orchestrator for loading and executing tasks defined in tasks.json or tasks.yaml files.
+/// </summary>
+public class TaskExecutor : IDisposable
 {
     private readonly Dictionary<string, TaskDefinition> _tasks;
     private readonly Dictionary<string, string[]> _aliases;
@@ -27,6 +30,31 @@ public class TaskExecutor
     private readonly SecurityValidator _securityValidator;
     private readonly bool _captureOutput;
 
+    // Phase 6: New services
+    private readonly InteractiveService _interactiveService;
+    private readonly SecretsProvider _secretsProvider;
+    private readonly AuditLogger _auditLogger;
+    private readonly bool _nonInteractive;
+    private readonly Dictionary<string, string> _promptValues = new();
+    private CancellationTokenSource? _cts;
+    private bool _disposed;
+
+    /// <summary>
+    /// Creates a new TaskExecutor instance.
+    /// </summary>
+    /// <param name="tasks">Dictionary of task definitions.</param>
+    /// <param name="aliases">Dictionary of task aliases.</param>
+    /// <param name="variables">Dictionary of variables for substitution.</param>
+    /// <param name="profileEnv">Environment variables from the active profile.</param>
+    /// <param name="allowConcurrency">Whether to allow concurrent execution of dependencies.</param>
+    /// <param name="dryRun">Whether to preview commands without executing.</param>
+    /// <param name="noCache">Whether to disable task caching.</param>
+    /// <param name="logger">Logger for diagnostic output.</param>
+    /// <param name="pluginLoader">Plugin loader for custom task types.</param>
+    /// <param name="captureOutput">Whether to capture task output for later processing.</param>
+    /// <param name="nonInteractive">Whether to skip prompts and use default values.</param>
+    /// <param name="auditLogPath">Path to the audit log file.</param>
+    /// <param name="enableAudit">Whether to enable audit logging.</param>
     public TaskExecutor(
         Dictionary<string, TaskDefinition> tasks,
         Dictionary<string, string[]>? aliases = null,
@@ -37,7 +65,10 @@ public class TaskExecutor
         bool noCache = false,
         ITaskLogger? logger = null,
         PluginLoader? pluginLoader = null,
-        bool captureOutput = false)
+        bool captureOutput = false,
+        bool nonInteractive = false,
+        string? auditLogPath = null,
+        bool enableAudit = false)
     {
         _tasks = tasks;
         _aliases = aliases ?? new Dictionary<string, string[]>();
@@ -47,13 +78,73 @@ public class TaskExecutor
         _dryRun = dryRun;
         _noCache = noCache;
         _captureOutput = captureOutput;
+        _nonInteractive = nonInteractive;
         _logger = logger ?? NullLogger.Instance;
         _conditionEvaluator = new ConditionEvaluator(_logger);
         _cacheManager = new CacheManager(_logger);
         _pluginLoader = pluginLoader ?? new PluginLoader(_logger);
         _securityValidator = new SecurityValidator(_logger);
+
+        // Phase 6: Initialize new services
+        _interactiveService = new InteractiveService(_logger, nonInteractive);
+        _secretsProvider = new SecretsProvider(_logger);
+        _auditLogger = new AuditLogger(auditLogPath, _logger, enableAudit);
+
+        // Setup cancellation handling
+        _cts = new CancellationTokenSource();
+        SetupCancellationHandler();
     }
 
+    /// <summary>
+    /// Sets up the Ctrl+C cancellation handler for graceful shutdown.
+    /// </summary>
+    private void SetupCancellationHandler()
+    {
+        Console.CancelKeyPress += (_, e) =>
+        {
+            e.Cancel = true; // Prevent immediate termination
+            _logger.Warning("Cancellation requested. Stopping tasks gracefully...");
+            Console.WriteLine();
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine("Cancellation requested. Stopping tasks...");
+            Console.ResetColor();
+            _cts?.Cancel();
+        };
+    }
+
+    /// <summary>
+    /// Gets the cancellation token for the current execution.
+    /// </summary>
+    public CancellationToken CancellationToken => _cts?.Token ?? CancellationToken.None;
+
+    /// <summary>
+    /// Disposes of resources used by the TaskExecutor.
+    /// </summary>
+    public void Dispose()
+    {
+        if (!_disposed)
+        {
+            _executionSemaphore.Dispose();
+            _cts?.Dispose();
+            _auditLogger.Dispose();
+            _disposed = true;
+        }
+    }
+
+    /// <summary>
+    /// Loads a TaskExecutor from a tasks file.
+    /// </summary>
+    /// <param name="filePath">Path to the tasks.json or tasks.yaml file.</param>
+    /// <param name="allowConcurrency">Whether to allow concurrent execution.</param>
+    /// <param name="dryRun">Whether to preview commands without executing.</param>
+    /// <param name="noCache">Whether to disable caching.</param>
+    /// <param name="profile">Profile name to apply.</param>
+    /// <param name="logger">Logger for diagnostic output.</param>
+    /// <param name="captureOutput">Whether to capture task output.</param>
+    /// <param name="nonInteractive">Whether to skip prompts.</param>
+    /// <param name="auditLogPath">Path to audit log file.</param>
+    /// <param name="enableAudit">Whether to enable audit logging.</param>
+    /// <returns>A configured TaskExecutor instance.</returns>
     public static TaskExecutor LoadFromFile(
         string filePath,
         bool allowConcurrency = false,
@@ -61,7 +152,10 @@ public class TaskExecutor
         bool noCache = false,
         string? profile = null,
         ITaskLogger? logger = null,
-        bool captureOutput = false)
+        bool captureOutput = false,
+        bool nonInteractive = false,
+        string? auditLogPath = null,
+        bool enableAudit = false)
     {
         if (!File.Exists(filePath))
             throw new FileNotFoundException(ErrorMessageHelper.GetFileNotFoundMessage(filePath));
@@ -149,15 +243,29 @@ public class TaskExecutor
         var pluginLoader = new PluginLoader(logger ?? NullLogger.Instance);
         // Note: Plugin names would come from config if we add plugins array to TasksConfig
 
-        return new TaskExecutor(tasks, aliases, variables, profileEnv, allowConcurrency, dryRun, noCache, logger, pluginLoader, captureOutput);
+        return new TaskExecutor(tasks, aliases, variables, profileEnv, allowConcurrency, dryRun, noCache, logger, pluginLoader, captureOutput, nonInteractive, auditLogPath, enableAudit);
     }
 
     /// <summary>
     /// Executes a task and returns its exit code.
     /// </summary>
+    /// <param name="taskName">Name of the task to execute.</param>
+    /// <returns>Exit code (0 for success, non-zero for failure).</returns>
     public async Task<int> ExecuteTaskAsync(string taskName)
     {
-        var result = await ExecuteTaskWithResultAsync(taskName);
+        var result = await ExecuteTaskWithResultAsync(taskName, CancellationToken);
+        return result.ExitCode;
+    }
+
+    /// <summary>
+    /// Executes a task with cancellation support.
+    /// </summary>
+    /// <param name="taskName">Name of the task to execute.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>Exit code (0 for success, non-zero for failure).</returns>
+    public async Task<int> ExecuteTaskAsync(string taskName, CancellationToken ct)
+    {
+        var result = await ExecuteTaskWithResultAsync(taskName, ct);
         return result.ExitCode;
     }
 
@@ -219,7 +327,7 @@ public class TaskExecutor
         };
     }
 
-    private async Task<(int exitCode, string? stdout, string? stderr)> RunCommandAsync(TaskDefinition task, string taskName)
+    private async Task<(int exitCode, string? stdout, string? stderr)> RunCommandAsync(TaskDefinition task, string taskName, CancellationToken ct = default)
     {
         // Check if this is a plugin-provided task type
         var provider = _pluginLoader.GetProvider(task.Type);
@@ -337,30 +445,39 @@ public class TaskExecutor
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 
+        // Create linked token source for timeout and cancellation
+        using var linkedCts = task.Timeout.HasValue && task.Timeout.Value > 0
+            ? CancellationTokenSource.CreateLinkedTokenSource(ct)
+            : CancellationTokenSource.CreateLinkedTokenSource(ct);
+
         if (task.Timeout.HasValue && task.Timeout.Value > 0)
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(task.Timeout.Value));
-            try
-            {
-                await process.WaitForExitAsync(cts.Token);
-                return (process.ExitCode, stdoutBuilder?.ToString(), stderrBuilder?.ToString());
-            }
-            catch (OperationCanceledException)
-            {
-                try
-                {
-                    process.Kill(entireProcessTree: true);
-                }
-                catch
-                {
-                    // Process may have already exited
-                }
-                return (-1, stdoutBuilder?.ToString(), stderrBuilder?.ToString());
-            }
+            linkedCts.CancelAfter(TimeSpan.FromSeconds(task.Timeout.Value));
         }
 
-        await process.WaitForExitAsync();
-        return (process.ExitCode, stdoutBuilder?.ToString(), stderrBuilder?.ToString());
+        try
+        {
+            await process.WaitForExitAsync(linkedCts.Token);
+            return (process.ExitCode, stdoutBuilder?.ToString(), stderrBuilder?.ToString());
+        }
+        catch (OperationCanceledException)
+        {
+            try
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            catch
+            {
+                // Process may have already exited
+            }
+
+            // Determine if this was a timeout or user cancellation
+            if (ct.IsCancellationRequested)
+            {
+                return (-2, stdoutBuilder?.ToString(), stderrBuilder?.ToString()); // User cancelled
+            }
+            return (-1, stdoutBuilder?.ToString(), stderrBuilder?.ToString()); // Timeout
+        }
     }
 
     private void PrintDryRunInfo(TaskDefinition task, string taskName, string taskLabel)
@@ -693,6 +810,31 @@ public class TaskExecutor
                 Console.WriteLine($"    - TTL: {task.Cache.TtlMinutes.Value} minutes");
         }
 
+        // Phase 6: Show prompts
+        if (task.Prompts.Count > 0)
+        {
+            Console.WriteLine("  Prompts:");
+            foreach (var (name, prompt) in task.Prompts)
+            {
+                var required = prompt.Required ? " (required)" : "";
+                Console.WriteLine($"    - {name}: {prompt.Message}{required}");
+                if (prompt.Choices.Length > 0)
+                {
+                    Console.WriteLine($"      Choices: {string.Join(", ", prompt.Choices)}");
+                }
+                if (!string.IsNullOrEmpty(prompt.Default))
+                {
+                    Console.WriteLine($"      Default: {prompt.Default}");
+                }
+            }
+        }
+
+        // Phase 6: Show parallelism setting
+        if (task.Parallel.HasValue)
+        {
+            Console.WriteLine($"  Parallel:     {task.Parallel.Value} max concurrent dependencies");
+        }
+
         // Find tasks that depend on this task
         var dependents = _tasks
             .Where(t => t.Value.DependsOn.Contains(taskName))
@@ -916,16 +1058,34 @@ public class TaskExecutor
         }
     }
 
+    /// <summary>
+    /// Executes multiple tasks sequentially and returns their combined exit code.
+    /// </summary>
+    /// <param name="taskNames">Names of tasks to execute.</param>
+    /// <returns>Exit code (0 if all succeeded, otherwise first non-zero exit code).</returns>
     public async Task<int> ExecuteTasksAsync(IEnumerable<string> taskNames)
     {
-        var result = await ExecuteTasksWithResultAsync(taskNames);
+        var result = await ExecuteTasksWithResultAsync(taskNames, CancellationToken);
         return result.ExitCode;
     }
 
     /// <summary>
-    /// Executes multiple tasks and returns detailed results.
+    /// Executes multiple tasks sequentially and returns detailed results.
     /// </summary>
+    /// <param name="taskNames">Names of tasks to execute.</param>
+    /// <returns>Result containing all task execution details.</returns>
     public async Task<TasksResult> ExecuteTasksWithResultAsync(IEnumerable<string> taskNames)
+    {
+        return await ExecuteTasksWithResultAsync(taskNames, CancellationToken);
+    }
+
+    /// <summary>
+    /// Executes multiple tasks sequentially with cancellation support.
+    /// </summary>
+    /// <param name="taskNames">Names of tasks to execute.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>Result containing all task execution details.</returns>
+    public async Task<TasksResult> ExecuteTasksWithResultAsync(IEnumerable<string> taskNames, CancellationToken ct)
     {
         var names = taskNames.ToList();
         var results = new List<TaskResult>();
@@ -944,7 +1104,9 @@ public class TaskExecutor
 
         foreach (var taskName in names)
         {
-            var result = await ExecuteTaskWithResultAsync(taskName);
+            ct.ThrowIfCancellationRequested();
+
+            var result = await ExecuteTaskWithResultAsync(taskName, ct);
             results.Add(result);
 
             if (!result.Success)
@@ -959,10 +1121,29 @@ public class TaskExecutor
     /// <summary>
     /// Executes a task and returns detailed result information.
     /// </summary>
+    /// <param name="taskName">Name of the task to execute.</param>
+    /// <returns>Detailed result of the task execution.</returns>
     public async Task<TaskResult> ExecuteTaskWithResultAsync(string taskName)
+    {
+        return await ExecuteTaskWithResultAsync(taskName, CancellationToken);
+    }
+
+    /// <summary>
+    /// Executes a task with cancellation support and returns detailed result information.
+    /// </summary>
+    /// <param name="taskName">Name of the task to execute.</param>
+    /// <param name="ct">Cancellation token for graceful shutdown.</param>
+    /// <returns>Detailed result of the task execution.</returns>
+    public async Task<TaskResult> ExecuteTaskWithResultAsync(string taskName, CancellationToken ct)
     {
         var stopwatch = Stopwatch.StartNew();
         _logger.Debug("Starting execution of task '{TaskName}'", taskName);
+
+        // Check for cancellation
+        if (ct.IsCancellationRequested)
+        {
+            return TaskResult.Cancelled(taskName);
+        }
 
         if (!_tasks.ContainsKey(taskName))
         {
@@ -972,12 +1153,13 @@ public class TaskExecutor
         }
 
         // Check if already completed in this session
-        await _executionSemaphore.WaitAsync();
+        await _executionSemaphore.WaitAsync(ct);
         try
         {
             if (_completedTasks.Contains(taskName))
             {
                 _logger.Debug("Task '{TaskName}' already completed in this session", taskName);
+                _auditLogger.LogTaskSkipped(taskName, "Already completed in this session");
                 return TaskResult.SkippedResult(taskName, "Already completed in this session");
             }
 
@@ -996,44 +1178,66 @@ public class TaskExecutor
 
         var task = _tasks[taskName];
 
+        // Phase 6: Collect interactive prompts before execution
+        if (task.Prompts.Count > 0)
+        {
+            try
+            {
+                var promptValues = await _interactiveService.CollectPromptsAsync(taskName, task.Prompts, ct);
+                foreach (var (key, value) in promptValues)
+                {
+                    _promptValues[key] = value;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                await RemoveFromExecuting(taskName);
+                return TaskResult.Cancelled(taskName);
+            }
+        }
+
         // Check conditions before executing
         if (!_conditionEvaluator.Evaluate(task.Condition, taskName))
         {
             var taskLabel = GetColoredTaskLabel(taskName);
             Console.WriteLine($"{taskLabel} Skipped (condition not met)");
             await MarkTaskComplete(taskName);
+            _auditLogger.LogTaskSkipped(taskName, "Condition not met");
             return TaskResult.SkippedResult(taskName, "Condition not met");
         }
 
-        // Execute dependencies
-        if (_allowConcurrency && task.AllowConcurrent && task.DependsOn.Length > 0)
+        // Execute dependencies with parallelism control
+        if (task.DependsOn.Length > 0)
         {
-            _logger.Debug("Executing {Count} dependencies concurrently for task '{TaskName}'", task.DependsOn.Length, taskName);
-            var dependencyTasks = task.DependsOn.Select(ExecuteTaskWithResultAsync);
-            var dependencyResults = await Task.WhenAll(dependencyTasks);
+            _logger.Debug("Executing {Count} dependencies for task '{TaskName}'", task.DependsOn.Length, taskName);
 
-            var failedDependency = dependencyResults.FirstOrDefault(r => !r.Success);
-            if (failedDependency != null)
+            // Phase 6: Use task-level parallelism setting, or fall back to global setting
+            int? maxParallel = task.Parallel;
+            if (!maxParallel.HasValue && task.AllowConcurrent && _allowConcurrency)
             {
-                await RemoveFromExecuting(taskName);
-                _logger.Error("One or more dependencies failed for task '{TaskName}'", taskName);
-                Console.WriteLine($"One or more dependencies failed for task '{taskName}'.");
-                return TaskResult.Failed(taskName, failedDependency.ExitCode, $"Dependency '{failedDependency.TaskName}' failed");
+                maxParallel = null; // Unlimited parallelism
             }
-        }
-        else
-        {
-            foreach (var dependency in task.DependsOn)
+            else if (!task.AllowConcurrent && !maxParallel.HasValue)
             {
-                _logger.Debug("Executing dependency '{Dependency}' for task '{TaskName}'", dependency, taskName);
-                var dependencyResult = await ExecuteTaskWithResultAsync(dependency);
-                if (!dependencyResult.Success)
+                maxParallel = 1; // Sequential execution
+            }
+
+            try
+            {
+                var dependencyResults = await ExecuteDependenciesWithParallelismAsync(task.DependsOn, maxParallel, ct);
+                var failedDependency = dependencyResults.FirstOrDefault(r => !r.Success);
+                if (failedDependency != null)
                 {
                     await RemoveFromExecuting(taskName);
-                    _logger.Error("Dependency '{Dependency}' failed for task '{TaskName}'", dependency, taskName);
-                    Console.WriteLine($"Dependency '{dependency}' failed for task '{taskName}'.");
-                    return TaskResult.Failed(taskName, dependencyResult.ExitCode, $"Dependency '{dependency}' failed");
+                    _logger.Error("One or more dependencies failed for task '{TaskName}'", taskName);
+                    Console.WriteLine($"One or more dependencies failed for task '{taskName}'.");
+                    return TaskResult.Failed(taskName, failedDependency.ExitCode, $"Dependency '{failedDependency.TaskName}' failed");
                 }
+            }
+            catch (OperationCanceledException)
+            {
+                await RemoveFromExecuting(taskName);
+                return TaskResult.Cancelled(taskName);
             }
         }
 
@@ -1047,7 +1251,8 @@ public class TaskExecutor
                 _logger.Debug("Executing {Count} pre-tasks for '{TaskName}'", task.PreTasks.Length, taskName);
                 foreach (var preTask in task.PreTasks)
                 {
-                    var preResult = await ExecuteTaskWithResultAsync(preTask);
+                    ct.ThrowIfCancellationRequested();
+                    var preResult = await ExecuteTaskWithResultAsync(preTask, ct);
                     if (!preResult.Success)
                     {
                         _logger.Error("Pre-task '{PreTask}' failed for task '{TaskName}'", preTask, taskName);
@@ -1068,13 +1273,15 @@ public class TaskExecutor
             {
                 Console.WriteLine($"{taskLabel} Skipped (cached)");
                 await MarkTaskComplete(taskName);
+                _auditLogger.LogTaskSkipped(taskName, "Cached");
 
                 // Still run post-tasks even when cached
                 if (task.PostTasks.Length > 0)
                 {
                     foreach (var postTask in task.PostTasks)
                     {
-                        var postResult = await ExecuteTaskWithResultAsync(postTask);
+                        ct.ThrowIfCancellationRequested();
+                        var postResult = await ExecuteTaskWithResultAsync(postTask, ct);
                         if (!postResult.Success)
                         {
                             return TaskResult.Failed(taskName, postResult.ExitCode, $"Post-task '{postTask}' failed");
@@ -1095,7 +1302,8 @@ public class TaskExecutor
                 {
                     foreach (var postTask in task.PostTasks)
                     {
-                        var postResult = await ExecuteTaskWithResultAsync(postTask);
+                        ct.ThrowIfCancellationRequested();
+                        var postResult = await ExecuteTaskWithResultAsync(postTask, ct);
                         if (!postResult.Success)
                         {
                             _logger.Error("Post-task '{PostTask}' failed for task '{TaskName}'", postTask, taskName);
@@ -1106,20 +1314,25 @@ public class TaskExecutor
                 }
 
                 await MarkTaskComplete(taskName);
+                _auditLogger.LogTaskComplete(taskName, 0, TimeSpan.Zero, true);
                 return TaskResult.Succeeded(taskName, TimeSpan.Zero);
             }
+
+            // Log task start for audit
+            _auditLogger.LogTaskStart(taskName, task.Command, task.Cwd);
 
             _logger.Info("Executing task '{TaskName}': {Command}", taskName, task.Command);
             Console.WriteLine($"{taskLabel} Executing task...");
 
             var taskStopwatch = Stopwatch.StartNew();
-            var (exitCode, stdout, stderr) = await RunCommandAsync(task, taskName);
+            var (exitCode, stdout, stderr) = await RunCommandAsync(task, taskName, ct);
             taskStopwatch.Stop();
 
             if (exitCode == 0)
             {
                 _logger.Info("Task '{TaskName}' completed successfully in {Duration}ms", taskName, taskStopwatch.ElapsedMilliseconds);
                 Console.WriteLine($"{taskLabel} Task completed successfully.");
+                _auditLogger.LogTaskComplete(taskName, 0, taskStopwatch.Elapsed, true);
 
                 // Save cache on success
                 if (task.Cache != null)
@@ -1132,7 +1345,8 @@ public class TaskExecutor
                 {
                     foreach (var postTask in task.PostTasks)
                     {
-                        var postResult = await ExecuteTaskWithResultAsync(postTask);
+                        ct.ThrowIfCancellationRequested();
+                        var postResult = await ExecuteTaskWithResultAsync(postTask, ct);
                         if (!postResult.Success)
                         {
                             _logger.Error("Post-task '{PostTask}' failed for task '{TaskName}'", postTask, taskName);
@@ -1149,14 +1363,27 @@ public class TaskExecutor
             {
                 _logger.Error("Task '{TaskName}' timed out after {Timeout} seconds", taskName, task.Timeout ?? 0);
                 Console.WriteLine($"{taskLabel} Task timed out after {task.Timeout} seconds.");
+                _auditLogger.LogTaskTimeout(taskName, task.Timeout ?? 0);
                 return TaskResult.TimedOut(taskName, task.Timeout ?? 0);
+            }
+            else if (exitCode == -2)
+            {
+                // Cancelled
+                _logger.Warning("Task '{TaskName}' was cancelled", taskName);
+                Console.WriteLine($"{taskLabel} Task cancelled.");
+                return TaskResult.Cancelled(taskName);
             }
             else
             {
                 _logger.Error("Task '{TaskName}' failed with exit code {ExitCode}", taskName, exitCode);
                 Console.WriteLine($"{taskLabel} Task failed with exit code {exitCode}.");
+                _auditLogger.LogTaskFailed(taskName, exitCode, $"Exit code: {exitCode}", taskStopwatch.Elapsed);
                 return TaskResult.Failed(taskName, exitCode, $"Task failed with exit code {exitCode}", taskStopwatch.Elapsed, stdout, stderr);
             }
+        }
+        catch (OperationCanceledException)
+        {
+            return TaskResult.Cancelled(taskName);
         }
         finally
         {
@@ -1166,7 +1393,7 @@ public class TaskExecutor
 
     private string SubstituteVariables(string input)
     {
-        if (string.IsNullOrEmpty(input) || _variables.Count == 0)
+        if (string.IsNullOrEmpty(input))
             return input;
 
         // Pattern matches ${varName} or $varName
@@ -1179,6 +1406,25 @@ public class TaskExecutor
             {
                 var envName = varName.Substring(4);
                 return Environment.GetEnvironmentVariable(envName) ?? match.Value;
+            }
+
+            // Phase 6: Check for secret: prefix to load from secrets provider
+            if (varName.StartsWith("secret:"))
+            {
+                var secretKey = varName.Substring(7);
+                var secretValue = _secretsProvider.GetSecret(secretKey);
+                if (secretValue != null)
+                {
+                    return secretValue;
+                }
+                _logger.Warning("Secret '{SecretKey}' not found", secretKey);
+                return match.Value;
+            }
+
+            // Check prompt values from interactive input
+            if (_promptValues.TryGetValue(varName, out var promptValue))
+            {
+                return promptValue;
             }
 
             // Check configured variables
@@ -1200,5 +1446,60 @@ public class TaskExecutor
         });
 
         return result;
+    }
+
+    /// <summary>
+    /// Executes dependencies with parallelism control.
+    /// </summary>
+    /// <param name="dependencies">List of dependency task names.</param>
+    /// <param name="maxParallel">Maximum number of parallel executions (null for unlimited).</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>List of task results.</returns>
+    private async Task<List<TaskResult>> ExecuteDependenciesWithParallelismAsync(
+        string[] dependencies,
+        int? maxParallel,
+        CancellationToken ct)
+    {
+        if (dependencies.Length == 0)
+            return new List<TaskResult>();
+
+        var results = new List<TaskResult>();
+
+        if (maxParallel.HasValue && maxParallel.Value > 0)
+        {
+            // Use semaphore to limit parallelism
+            using var semaphore = new SemaphoreSlim(maxParallel.Value, maxParallel.Value);
+            var tasks = dependencies.Select(async dep =>
+            {
+                await semaphore.WaitAsync(ct);
+                try
+                {
+                    return await ExecuteTaskWithResultAsync(dep, ct);
+                }
+                finally
+                {
+                    semaphore.Release();
+                }
+            });
+
+            results.AddRange(await Task.WhenAll(tasks));
+        }
+        else if (_allowConcurrency)
+        {
+            // Run all in parallel
+            var tasks = dependencies.Select(dep => ExecuteTaskWithResultAsync(dep, ct));
+            results.AddRange(await Task.WhenAll(tasks));
+        }
+        else
+        {
+            // Run sequentially
+            foreach (var dep in dependencies)
+            {
+                ct.ThrowIfCancellationRequested();
+                results.Add(await ExecuteTaskWithResultAsync(dep, ct));
+            }
+        }
+
+        return results;
     }
 }
